@@ -78,11 +78,11 @@ $script:ProfileProvided = $false
 $script:Skills = @(
     "databricks-agent-bricks", "databricks-aibi-dashboards", "databricks-app-apx", "databricks-app-python",
     "databricks-asset-bundles", "databricks-config", "databricks-dbsql", "databricks-docs", "databricks-genie",
-    "databricks-jobs", "databricks-metric-views", "databricks-model-serving", "databricks-python-sdk",
-    "databricks-unity-catalog", "databricks-vector-search", "databricks-zerobus-ingest",
-    "databricks-lakebase-autoscale", "databricks-lakebase-provisioned", "databricks-mlflow-evaluation",
-    "databricks-spark-declarative-pipelines", "spark-python-data-source", "databricks-spark-structured-streaming",
-    "databricks-synthetic-data-generation", "databricks-unstructured-pdf-generation"
+    "databricks-iceberg", "databricks-jobs", "databricks-lakebase-autoscale", "databricks-lakebase-provisioned",
+    "databricks-metric-views", "databricks-mlflow-evaluation", "databricks-model-serving", "databricks-parsing",
+    "databricks-python-sdk", "databricks-spark-declarative-pipelines", "databricks-spark-structured-streaming",
+    "databricks-synthetic-data-gen", "databricks-unity-catalog", "databricks-unstructured-pdf-generation",
+    "databricks-vector-search", "databricks-zerobus-ingest", "spark-python-data-source"
 )
 
 # MLflow skills (fetched from mlflow/skills repo)

@@ -233,3 +233,17 @@ uv pip install -e ".test/"
 uv run pytest .test/tests/
 uv run python .test/scripts/regression.py <skill-name>
 ```
+
+---
+
+## Troubleshooting
+
+### MLflow evaluation not returning results
+
+If `/skill-test <skill-name> mlflow` hangs or doesn't return results, run manually with debug logging:
+
+```bash
+MLFLOW_LOG_LEVEL=DEBUG uv run python .test/scripts/mlflow_eval.py <skill-name>
+```
+
+This will show detailed MLflow API calls and help identify connection or authentication issues.
