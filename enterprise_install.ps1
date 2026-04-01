@@ -1,4 +1,4 @@
-#
+﻿#
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
@@ -183,10 +183,10 @@ function Invoke-RadioSelect {
     Write-Host ""
 
     # Reserve lines
-    for ($r = 0; $r -lt ($count + 1); $r++) { Write-Host "" }
+    for ($r = 0; $r -lt ($count + 2); $r++) { Write-Host "" }
 
     $draw = {
-        $up = $count + 1
+        $up = $count + 2
         [Console]::SetCursorPosition(0, [Console]::CursorTop - $up)
         for ($idx = 0; $idx -lt $count; $idx++) {
             $arrow = "    "
@@ -277,7 +277,7 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
 
 # SSH access to GitHub (needed only when pulling enterprise skills from a remote git repo)
 if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
-    $sshOut = & ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1
+    try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
     if ($sshOut -match "Hi ") {
         Write-Ok "SSH access to github.com"
     } else {
@@ -609,16 +609,16 @@ if ($script:InstallSkills) {
             if ($currentRemote -ne $EnterpriseSkillsRepo) {
                 Write-Msg "Enterprise skills repo URL changed — re-cloning..."
                 Remove-Item -Path $EntSkillsRepoDir -Recurse -Force
-                & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>$null
+                try { & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>&1 | Out-Null } catch {}
                 if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to re-clone enterprise skills repo" }
             } else {
-                & git -C $EntSkillsRepoDir fetch -q --depth 1 origin main 2>$null
-                & git -C $EntSkillsRepoDir reset --hard FETCH_HEAD 2>$null
+                try { & git -C $EntSkillsRepoDir fetch -q --depth 1 origin main 2>&1 | Out-Null } catch {}
+                try { & git -C $EntSkillsRepoDir reset --hard FETCH_HEAD 2>&1 | Out-Null } catch {}
                 if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to update enterprise skills repo" }
             }
         } else {
             New-Item -ItemType Directory -Path $InstallDir -Force -ErrorAction SilentlyContinue | Out-Null
-            & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>$null
+            try { & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>&1 | Out-Null } catch {}
             if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to clone enterprise skills repo ($EnterpriseSkillsRepo)" }
         }
     } else {
