@@ -26,21 +26,21 @@ set -e
 
 ENTERPRISE_NAME="McCain"
 ENTERPRISE_DISPLAY="McCain"
-ENTERPRISE_ORG="YOUR_ORG"    # GitHub org or user that owns the enterprise skills repo
+ENTERPRISE_ORG="McCainFoods"    # GitHub org or user that owns the enterprise skills repo
 
 # Enterprise skills source mode.
 #   "git"   — clone/pull from a private remote repo (derived from ENTERPRISE_NAME + ENTERPRISE_ORG)
 #   "local" — use a path on disk (set ENTERPRISE_SKILLS_PATH below; defaults to ./enterprise_skills/)
-ENTERPRISE_SKILLS_MODE="local"
+ENTERPRISE_SKILLS_MODE="git"
 
 # Used when ENTERPRISE_SKILLS_MODE="git"
 # Repo URL — defaults to <ENTERPRISE_ORG>/<ENTERPRISE_NAME>-skills if left as-is.
 # Override with any SSH clone URL if your skills live in a different repo.
-ENTERPRISE_SKILLS_REPO="git@github.com:${ENTERPRISE_ORG}/${ENTERPRISE_NAME}-skills.git"
+ENTERPRISE_SKILLS_REPO="git@github.com:${ENTERPRISE_ORG}/DAIA-data-architecture-skills.git"
 # Subfolder inside the repo where skill directories live.
 # Leave empty if skills are at the root of the repo.
 # Example: "skills/enterprise"  or  "claude-skills"
-ENTERPRISE_SKILLS_REPO_SUBPATH=""
+ENTERPRISE_SKILLS_REPO_SUBPATH="mccain-data-architecture-skills"
 
 # Used when ENTERPRISE_SKILLS_MODE="local"
 # Leave empty to use the enterprise_skills/ folder inside this repo.
@@ -445,7 +445,7 @@ if command -v databricks >/dev/null 2>&1; then
 fi
 
 # =============================================================================
-# ── STEP 4: AUTHENTICATION CONFIRMATION + CA CERTIFICATES ─────────────────────
+# ── STEP 4: AUTHENTICATION + CA CERTIFICATES ─────────────────────────────────
 # =============================================================================
 
 step "Step 4 of 9 — Authentication + CA Certificates"
@@ -465,7 +465,7 @@ fi
 CA_BUNDLE="$HOME/.${ENTERPRISE_NAME}-adk/ca-bundle.pem"
 
 if [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f "$NODE_EXTRA_CA_CERTS" ]; then
-    ok "NODE_EXTRA_CA_CERTS already set ($NODE_EXTRA_CA_CERTS)"
+    : # already configured — skip silently
 else
     echo ""
     msg "Configuring corporate CA certificates…"
@@ -488,7 +488,6 @@ else
     fi
 
     if [ "$CERT_OK" = true ]; then
-        ok "CA bundle written: $CA_BUNDLE"
         export NODE_EXTRA_CA_CERTS="$CA_BUNDLE"
         # Persist to shell profile
         SHELL_PROFILE=""
@@ -499,7 +498,6 @@ else
         if [ -n "$SHELL_PROFILE" ] && ! grep -q "NODE_EXTRA_CA_CERTS" "$SHELL_PROFILE" 2>/dev/null; then
             { echo ""; echo "# Enterprise ADK — corporate CA for Claude Code";
               echo "export NODE_EXTRA_CA_CERTS=\"$CA_BUNDLE\""; } >> "$SHELL_PROFILE"
-            ok "NODE_EXTRA_CA_CERTS added to $SHELL_PROFILE (restart terminal to apply)"
         fi
     else
         warn "Could not extract CA certs — set manually:"
@@ -525,6 +523,7 @@ if [ "$INSTALL_MCP" = true ]; then
     if ! "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null || [ "$FORCE" = true ]; then
         mkdir -p "$VENV_DIR"
         uv venv --python 3.11 --allow-existing "$VENV_DIR" -q 2>/dev/null || uv venv --allow-existing "$VENV_DIR" -q
+        msg "Installing Python dependencies…"
         # --native-tls: use system certificate store (required behind corporate TLS-intercepting proxies)
         uv pip install --python "$VENV_PYTHON" --native-tls \
             -e "$REPO_DIR/databricks-tools-core" \
@@ -750,7 +749,7 @@ if [ "$INSTALL_SKILLS" = true ]; then
 fi
 
 # =============================================================================
-# ── STEP 6: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
+# ── STEP 9: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
 # =============================================================================
 
 step "Step 9 of 9 — Workspace + Version Lock"

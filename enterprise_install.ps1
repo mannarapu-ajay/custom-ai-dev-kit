@@ -20,21 +20,21 @@ $ErrorActionPreference = "Stop"
 
 $EnterpriseName    = "McCain"
 $EnterpriseDisplay = "McCain"
-$EnterpriseOrg     = "YOUR_ORG"   # GitHub org or user that owns the enterprise skills repo
+$EnterpriseOrg     = "McCainFoods"   # GitHub org or user that owns the enterprise skills repo
 
 # Enterprise skills source mode.
 #   "git"   — clone/pull from a private remote repo (derived from EnterpriseOrg + EnterpriseName)
 #   "local" — use a path on disk (set EnterpriseSkillsPath below; defaults to .\enterprise_skills\)
-$EnterpriseSkillsMode = "local"
+$EnterpriseSkillsMode = "git"
 
 # Used when EnterpriseSkillsMode = "git"
 # Repo URL — defaults to <EnterpriseOrg>/<EnterpriseName>-skills if left as-is.
 # Override with any SSH clone URL if your skills live in a different repo.
-$EnterpriseSkillsRepo = "git@github.com:${EnterpriseOrg}/${EnterpriseName}-skills.git"
+$EnterpriseSkillsRepo = "git@github.com:${EnterpriseOrg}/DAIA-data-architecture-skills.git"
 # Subfolder inside the repo where skill directories live.
 # Leave empty if skills are at the root of the repo.
 # Example: "skills/enterprise"  or  "claude-skills"
-$EnterpriseSkillsRepoSubpath = ""
+$EnterpriseSkillsRepoSubpath = "mccain-data-architecture-skills"
 
 # Used when EnterpriseSkillsMode = "local"
 # Leave empty to use the enterprise_skills\ folder inside this repo.
@@ -394,7 +394,7 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
 $caBundle = Join-Path $env:USERPROFILE ".$EnterpriseName-adk\ca-bundle.pem"
 
 if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
-    Write-Ok "NODE_EXTRA_CA_CERTS already set ($env:NODE_EXTRA_CA_CERTS)"
+    # already configured — skip silently
 } else {
     Write-Host ""
     Write-Msg "Configuring corporate CA certificates..."
@@ -409,10 +409,8 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
         }
         $pemContent | Set-Content $caBundle -Encoding UTF8
         $env:NODE_EXTRA_CA_CERTS = $caBundle
-        Write-Ok "CA bundle written: $caBundle"
         # Persist to user environment
         [System.Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", $caBundle, "User")
-        Write-Ok "NODE_EXTRA_CA_CERTS set in user environment (restart terminal to apply)"
     } catch {
         Write-Warn "Could not extract CA certs — set manually:"
         Write-Msg  "  `$env:NODE_EXTRA_CA_CERTS = 'C:\path\to\bundle.crt'"
@@ -431,14 +429,17 @@ if ($script:InstallMcp) {
     Write-Msg "Setting up Databricks MCP server..."
     if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server"))) { Write-Die "databricks-mcp-server not found in $ScriptDir" }
 
-    $alreadyInstalled = & $VenvPython -c "import databricks_mcp_server" 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not $script:Force) {
-        Write-Ok "MCP server already set up — skipping"
-    } else {
-        if ($script:Force) { Write-Msg "Force reinstall..." }
+    & $VenvPython -c "import databricks_mcp_server" 2>$null
+    $mcpInstalled = ($LASTEXITCODE -eq 0)
+    if ($mcpInstalled) {
+        if ($script:Force) { Write-Msg "Force reinstall..." } else { Write-Ok "MCP server already set up — skipping" }
+    }
+
+    if (-not $mcpInstalled -or $script:Force) {
         New-Item -ItemType Directory -Path $VenvDir -Force -ErrorAction SilentlyContinue | Out-Null
         & uv venv --python 3.11 --allow-existing $VenvDir -q 2>$null
         if ($LASTEXITCODE -ne 0) { & uv venv --allow-existing $VenvDir -q }
+        Write-Msg "Installing Python dependencies..."
         & uv pip install --python $VenvPython --native-tls `
             -e (Join-Path $ScriptDir "databricks-tools-core") `
             -e (Join-Path $ScriptDir "databricks-mcp-server") --quiet
@@ -499,7 +500,7 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
         $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
         $mcpJson.mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN = $ghToken
         $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
-        Write-Ok "GitHub MCP authenticated as $ghUser"
+        Write-Ok "GitHub MCP authenticated as $(if ($ghUser) { $ghUser } else { 'unknown' })"
     } else {
         Write-Warn "Could not retrieve GitHub token — edit GITHUB_PERSONAL_ACCESS_TOKEN in .mcp.json manually"
     }
