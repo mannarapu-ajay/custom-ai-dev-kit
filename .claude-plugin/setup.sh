@@ -53,8 +53,10 @@ cd "$PLUGIN_ROOT"
 uv venv --python 3.11 >&2
 
 # Install dependencies
-uv pip install --python .venv/bin/python -e "$TOOLS_CORE_DIR" --quiet >&2
-uv pip install --python .venv/bin/python -e "$MCP_SERVER_DIR" --quiet >&2
+# --native-tls: use the system certificate store so installs work behind
+# corporate TLS-intercepting proxies (avoids "UnknownIssuer" errors with uv).
+uv pip install --python .venv/bin/python --native-tls -e "$TOOLS_CORE_DIR" --quiet >&2
+uv pip install --python .venv/bin/python --native-tls -e "$MCP_SERVER_DIR" --quiet >&2
 
 # Verify installation
 if .venv/bin/python -c "import databricks_mcp_server" 2>/dev/null; then
