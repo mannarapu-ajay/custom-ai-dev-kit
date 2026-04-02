@@ -1,4 +1,4 @@
-#
+﻿#
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
@@ -153,6 +153,31 @@ while ($i -lt $args.Count) {
 # -- OUTPUT HELPERS -----------------------------------------------------------
 # =============================================================================
 
+# Refresh PATH from registry, then probe known winget install dirs for a binary.
+# Returns $true if the command is now resolvable, $false otherwise.
+function Add-WingetInstalledPath {
+    param([string]$ExeName)
+    # 1. Refresh PATH from registry
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("Path","User")
+    if (Get-Command $ExeName -ErrorAction SilentlyContinue) { return $true }
+    # 2. Test-Path against exact dirs winget uses — no recursion, no exit codes
+    $knownDirs = @(
+        "$env:ProgramFiles\nodejs",
+        "$env:ProgramFiles\GitHub CLI",
+        "$env:ProgramW6432\nodejs",
+        "$env:LOCALAPPDATA\Programs\nodejs",
+        "$env:LOCALAPPDATA\Programs\GitHub CLI"
+    )
+    foreach ($dir in $knownDirs) {
+        if (Test-Path (Join-Path $dir $ExeName) -ErrorAction SilentlyContinue) {
+            $env:Path = "$dir;" + $env:Path
+            return $true
+        }
+    }
+    return $false
+}
+
 function Write-Msg  { param($m) if (-not $script:Silent) { Write-Host "  $m" } }
 function Write-Ok   { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "v " -ForegroundColor Green -NoNewline; Write-Host $m } }
 function Write-Warn { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "! " -ForegroundColor Yellow -NoNewline; Write-Host $m } }
@@ -196,9 +221,10 @@ function Invoke-RadioSelect {
         $values += $parts[1]
         $hints  += if ($parts.Count -gt 2) { $parts[2] } else { "" }
     }
-    $count    = $labels.Count
-    $cursor   = 0
-    $selected = 0
+    $count      = $labels.Count
+    $cursor     = 0
+    $selected   = 0
+    $labelWidth = ($labels | Measure-Object -Property Length -Maximum).Maximum
 
     # Non-interactive fallback (no console / output redirected)
     if ([Console]::IsOutputRedirected -or [Console]::IsInputRedirected) {
@@ -217,9 +243,12 @@ function Invoke-RadioSelect {
     Write-Host "  (up/down arrows to navigate, Enter to confirm)" -ForegroundColor DarkGray
     Write-Host ""
 
-    # Record the row where the list starts, then reserve lines
-    $startRow = [Console]::CursorTop
-    for ($r = 0; $r -lt ($count + 2); $r++) { Write-Host "" }
+    # Reserve lines first, then calculate startRow from current cursor position.
+    # This handles console scroll: if writing blank lines scrolls the buffer,
+    # $startRow computed before would point off-screen and cause SetCursorPosition errors.
+    $listHeight = $count + 2
+    for ($r = 0; $r -lt $listHeight; $r++) { Write-Host "" }
+    $startRow = [Math]::Max(0, [Console]::CursorTop - $listHeight)
 
     # Redraw using absolute cursor positioning - no relative movement artifacts
     $redraw = {
@@ -231,7 +260,7 @@ function Invoke-RadioSelect {
             $color = [ConsoleColor]::DarkGray
             if ($idx -eq $cursor)   { $arrow = "  > " }
             if ($idx -eq $selected) { $dot = "*"; $color = [ConsoleColor]::Green }
-            $line = "  $arrow$dot  $($labels[$idx])   $($hints[$idx])"
+            $line = "  $arrow$dot  $($labels[$idx].PadRight($labelWidth))   $($hints[$idx])"
             $line = $line.PadRight($winW - 1).Substring(0, [Math]::Min($line.Length + ($winW - 1 - $line.Length), $winW - 1))
             $prev = [Console]::ForegroundColor
             [Console]::ForegroundColor = $color
@@ -281,9 +310,11 @@ function Invoke-RadioSelect {
 # =============================================================================
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   $EnterpriseDisplay — Enterprise AI Dev Kit Installer         ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+$_bw = 56
+$_bt = "   $EnterpriseDisplay — Enterprise AI Dev Kit Installer"
+Write-Host ("╔" + ("═" * $_bw) + "╗") -ForegroundColor Cyan
+Write-Host ("║" + $_bt.PadRight($_bw) + "║") -ForegroundColor Cyan
+Write-Host ("╚" + ("═" * $_bw) + "╝") -ForegroundColor Cyan
 Write-Host ""
 Write-Warn "NOTE: Do NOT run the official Databricks install.ps1 alongside this script."
 Write-Msg  "  This enterprise installer fully replaces it. Running both will break the MCP config."
@@ -331,12 +362,10 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
     Write-Warn "Node.js not found — installing via winget..."
     try {
         & winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        if (Get-Command npx -ErrorAction SilentlyContinue) {
+        if (Add-WingetInstalledPath "npx.cmd") {
             Write-Ok "Node.js $(& node --version 2>$null) / npx (just installed)"
         } else {
-            Write-Warn "winget install Node.js succeeded but npx not in PATH yet — restart your terminal or install manually: https://nodejs.org"
+            Write-Warn "Node.js installed but npx not in PATH — restart your terminal or install manually: https://nodejs.org"
         }
     } catch {
         Write-Warn "Could not auto-install Node.js — install manually: https://nodejs.org"
@@ -351,11 +380,10 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
     Write-Warn "gh CLI not found — installing via winget..."
     try {
         & winget install GitHub.cli --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        if (Get-Command gh -ErrorAction SilentlyContinue) {
+        if (Add-WingetInstalledPath "gh.exe") {
             Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1) (just installed)"
         } else {
-            Write-Warn "winget install gh CLI succeeded but gh not in PATH yet — restart your terminal or install manually: https://cli.github.com"
+            Write-Warn "gh CLI installed but not in PATH — restart your terminal or install manually: https://cli.github.com"
         }
     } catch {
         Write-Warn "Could not auto-install gh CLI — install manually: https://cli.github.com"
