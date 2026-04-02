@@ -10,6 +10,87 @@
 > For full third-party attribution, see NOTICE.txt.
 ---
 
+## Enterprise Installation (McCain)
+
+The enterprise installer extends the standard AI Dev Kit with:
+- Automated workspace selection (Growth, Supply Chain, Finance, Agriculture, HR, Procurement, EDP)
+- Dedicated McCain SSH key (`~/.ssh/id_ed25519_mccain`) — created once, reused across all projects
+- GitHub account verification (ensures you're using your McCain corporate account)
+- Enterprise skills pulled automatically from the private McCain skills repo
+- Corporate CA certificate configuration
+- GitHub MCP + Atlassian MCP (Confluence + Jira) setup
+
+### Prerequisites
+
+- **gh CLI** — [https://cli.github.com](https://cli.github.com)
+- **git**, **Node.js**, **uv**, **Databricks CLI** (auto-installed if missing)
+- Access to the McCain GitHub org
+
+### Mac / Linux
+
+```bash
+# Full install (first time)
+bash /path/to/custom-ai-dev-kit/enterprise_install.sh
+
+# Skills only — re-pull enterprise skills without touching MCP or workspace config
+bash /path/to/custom-ai-dev-kit/enterprise_install.sh --skills-only
+
+# Specify Databricks profile
+bash /path/to/custom-ai-dev-kit/enterprise_install.sh --profile DEFAULT
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Full install (first time)
+powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1
+
+# Skills only — re-pull enterprise skills without touching MCP or workspace config
+powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1 -SkillsOnly
+
+# Specify Databricks profile
+powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1 -Profile DEFAULT
+```
+
+### What each step does
+
+| Step | Description | Skipped by `--skills-only` |
+|------|-------------|---------------------------|
+| 1 — Project Directory | Create project folder and `.claude/skills` | |
+| 2 — Prerequisites | Install git, Node.js, uv, Databricks CLI, gh CLI; set up McCain SSH key | Tool checks only |
+| 3 — Databricks Workspace | Select workspace URL and Databricks profile | ✓ |
+| 4 — Authentication + CA | Verify Databricks auth; configure corporate CA certs | ✓ |
+| 5 — Databricks MCP | Install and configure the Databricks MCP server | ✓ |
+| 6 — GitHub MCP | Configure GitHub MCP with OAuth token | ✓ |
+| 7 — Atlassian MCP | Configure Atlassian MCP (Confluence + Jira) | ✓ |
+| 8 — Skills + Settings | Install Databricks and enterprise skills | |
+| 9 — Version Lock | Write `.gitignore`, metadata, and `version.lock` | ✓ |
+
+### SSH key setup
+
+On first run the installer:
+1. Checks if you already have SSH access to `github.com`
+2. If yes — confirms the authenticated account is your McCain corporate account
+3. If no (or wrong account) — opens the browser for `gh auth login`
+4. Creates `~/.ssh/id_ed25519_mccain` (only if it doesn't already exist)
+5. Registers the key on your McCain GitHub account
+6. Updates `~/.ssh/config` so all `github.com` connections use this key
+
+The key is reused across all projects — the installer will detect it on subsequent runs and skip generation.
+
+### Troubleshooting
+
+**`gh ssh-key list` returns HTTP 404**
+Your `gh` session is missing the `admin:public_key` scope. Re-run the installer — it will re-authenticate with the correct scopes automatically.
+
+**Enterprise skills cloned but skills count is 0**
+Check `ENTERPRISE_SKILLS_REPO_SUBPATH` in `enterprise_install.sh` — it must match the subfolder inside the repo where `SKILL.md` files live.
+
+**Access denied to enterprise skills repo**
+Your GitHub account does not have access. Contact your administrator, then re-run with `--skills-only` once access is granted.
+
+---
+
 ## Overview
 
 AI-Driven Development (vibe coding) on Databricks just got a whole lot better. The **AI Dev Kit** gives your AI coding assistant (Claude Code, Cursor, Antigravity, Windsurf, etc.) the trusted sources it needs to build faster and smarter on Databricks.

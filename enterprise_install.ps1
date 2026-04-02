@@ -103,6 +103,7 @@ $script:Scope           = if ($env:DEVKIT_SCOPE)   { $env:DEVKIT_SCOPE }   else 
 $script:Force           = $env:DEVKIT_FORCE -eq "true"
 $script:InstallMcp      = $true
 $script:InstallSkills   = $true
+$script:SkillsOnly      = $false
 $script:SkillsProfile   = ""
 $script:Silent          = $false
 $script:ProfileProvided = $false
@@ -120,7 +121,7 @@ while ($i -lt $args.Count) {
     switch ($args[$i]) {
         { $_ -in "-p","--profile","-Profile" }       { $script:Profile_ = $args[$i+1]; $script:ProfileProvided = $true; $i += 2 }
         { $_ -in "-g","--global","-Global" }          { $script:Scope = "global"; $i++ }
-        { $_ -in "--skills-only","-SkillsOnly" }      { $script:InstallMcp = $false; $i++ }
+        { $_ -in "--skills-only","-SkillsOnly" }      { $script:InstallMcp = $false; $script:SkillsOnly = $true; $i++ }
         { $_ -in "--mcp-only","-McpOnly" }            { $script:InstallSkills = $false; $i++ }
         { $_ -in "--skills-profile","-SkillsProfile" }{ $script:SkillsProfile = $args[$i+1]; $i += 2 }
         { $_ -in "--silent","-Silent" }               { $script:Silent = $true; $i++ }
@@ -134,7 +135,7 @@ while ($i -lt $args.Count) {
             Write-Host "Options:"
             Write-Host "  -Profile NAME        Databricks profile (default: DEFAULT)"
             Write-Host "  -Global              Install globally (not per-project)"
-            Write-Host "  -SkillsOnly          Skip MCP server setup"
+            Write-Host "  -SkillsOnly          Fast path: only update skills (skip Steps 3-7, 9)"
             Write-Host "  -McpOnly             Skip skills installation"
             Write-Host "  -SkillsProfile LIST  Skill profiles: all,data-engineer,analyst,ai-ml-engineer,app-developer"
             Write-Host "  -Silent              No output except errors"
@@ -156,7 +157,7 @@ while ($i -lt $args.Count) {
 # =============================================================================
 
 function Write-Msg  { param($m) if (-not $script:Silent) { Write-Host "  $m" } }
-function Write-Ok   { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "v " -ForegroundColor Green -NoNewline; Write-Host $m } }
+function Write-Ok   { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "✓ " -ForegroundColor Green -NoNewline; Write-Host $m } }
 function Write-Warn { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "! " -ForegroundColor Yellow -NoNewline; Write-Host $m } }
 function Write-Die  { param($m) Write-Host "  " -NoNewline; Write-Host "x $m" -ForegroundColor Red; exit 1 }
 function Write-Step {
@@ -295,22 +296,32 @@ Write-Host ""
 # -- STEP 1: PROJECT DIRECTORY ------------------------------------------------
 # =============================================================================
 
-Write-Step "Step 1 of 9 — Project Directory"
-
-$script:ProjectDir = Read-Prompt "Project directory" (Get-Location).Path
-if (-not (Test-Path $script:ProjectDir)) { New-Item -ItemType Directory -Path $script:ProjectDir -Force | Out-Null }
-$script:ProjectDir = (Resolve-Path $script:ProjectDir).Path
-Write-Ok "Project dir: $($script:ProjectDir)"
+if ($script:SkillsOnly) {
+    # In skills-only mode just use the current directory — no prompt needed
+    $script:ProjectDir = (Get-Location).Path
+    Write-Ok "Project dir: $($script:ProjectDir)"
+} else {
+    Write-Step "Step 1 of 9 — Project Directory"
+    $script:ProjectDir = Read-Prompt "Project directory" (Get-Location).Path
+    if (-not (Test-Path $script:ProjectDir)) { New-Item -ItemType Directory -Path $script:ProjectDir -Force | Out-Null }
+    $script:ProjectDir = (Resolve-Path $script:ProjectDir).Path
+    Write-Ok "Project dir: $($script:ProjectDir)"
+}
 
 $StateDirPath = Join-Path $script:ProjectDir $StateSubdir
 if ($script:Scope -eq "global") { $StateDirPath = Join-Path $InstallDir $StateSubdir }
 
 foreach ($d in @(
     (Join-Path $script:ProjectDir ".claude\skills"),
-    $StateDirPath,
-    (Join-Path $script:ProjectDir "src\generated"),
-    (Join-Path $script:ProjectDir "instruction-templates")
+    $StateDirPath
 )) { New-Item -ItemType Directory -Path $d -Force -ErrorAction SilentlyContinue | Out-Null }
+
+if (-not $script:SkillsOnly) {
+    foreach ($d in @(
+        (Join-Path $script:ProjectDir "src\generated"),
+        (Join-Path $script:ProjectDir "instruction-templates")
+    )) { New-Item -ItemType Directory -Path $d -Force -ErrorAction SilentlyContinue | Out-Null }
+}
 
 Write-Ok "Workspace directories created"
 
@@ -319,6 +330,8 @@ Write-Ok "Workspace directories created"
 # =============================================================================
 
 Write-Step "Step 2 of 9 — Prerequisites"
+
+if (-not $script:SkillsOnly) {
 
 # git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Die "git required. Install: https://git-scm.com" }
@@ -345,7 +358,9 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
     }
 }
 
-# gh CLI (needed for GitHub MCP OAuth)
+} # end SkillsOnly skip
+
+# gh CLI (needed for GitHub MCP OAuth + SSH key setup)
 if (Get-Command gh -ErrorAction SilentlyContinue) {
     $ghVer = & gh --version 2>&1 | Select-Object -First 1
     Write-Ok "gh CLI: $ghVer"
@@ -366,69 +381,117 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
 
 # SSH access to GitHub (needed only when pulling enterprise skills from a remote git repo)
 if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
+
+    # ── Dedicated McCain SSH key setup ────────────────────────────────────────
+    # Uses %USERPROFILE%\.ssh\id_ed25519_mccain — created once, reused across all projects.
+    # Updates ~/.ssh/config so SSH always picks this key for github.com.
+    function Invoke-McCainSshKeySetup {
+        $mccainKey     = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+        $mccainKeyPub  = "$mccainKey.pub"
+        $sshDir        = Join-Path $env:USERPROFILE ".ssh"
+        New-Item -ItemType Directory -Path $sshDir -Force -ErrorAction SilentlyContinue | Out-Null
+
+        # Step 1: Generate key only if it does not already exist
+        if (-not (Test-Path $mccainKey)) {
+            Write-Msg "Generating dedicated McCain SSH key..."
+            $gitEmail   = & gh api user --jq '.email' 2>$null
+            $keyComment = if ($gitEmail) { $gitEmail } else { "mccain-adk" }
+            & ssh-keygen -t ed25519 -C $keyComment -f $mccainKey -N '""'
+            Write-Ok "McCain SSH key generated: $mccainKey"
+        } else {
+            Write-Ok "Existing McCain SSH key found — reusing"
+        }
+
+        # Step 2: Register on GitHub only if not already there
+        $localFp = (& ssh-keygen -lf $mccainKeyPub 2>$null) -split ' ' | Select-Object -Index 1
+        $ghKeys  = & gh ssh-key list 2>$null | Out-String
+        if ($localFp -and $ghKeys -match [regex]::Escape($localFp)) {
+            Write-Ok "McCain SSH key already registered on GitHub"
+        } else {
+            $hostLabel = "Enterprise ADK - $env:COMPUTERNAME"
+            Write-Msg "Registering McCain SSH key on GitHub..."
+            $addErr = (& gh ssh-key add $mccainKeyPub --title $hostLabel 2>&1) | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "McCain SSH key registered on GitHub ($hostLabel)"
+            } else {
+                Write-Warn "Could not register key: $($addErr.Trim())"
+            }
+        }
+
+        # Step 3: Update %USERPROFILE%\.ssh\config to always use this key for github.com
+        $sshConfig = Join-Path $sshDir "config"
+        if (-not (Test-Path $sshConfig)) { New-Item -ItemType File -Path $sshConfig -Force | Out-Null }
+        $content = Get-Content $sshConfig -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { $content = "" }
+        $block = "`nHost github.com`n  IdentityFile $mccainKey`n  IdentitiesOnly yes`n"
+        if ($content -match '(?m)^Host github\.com') {
+            $content = $content -replace '(?ms)(^Host github\.com\r?\n)([ \t]+[^\r\n]*\r?\n)*', $block.TrimStart()
+        } else {
+            $content = $content.TrimEnd() + $block
+        }
+        Set-Content $sshConfig -Value $content -Encoding UTF8 -NoNewline
+        Write-Ok "SSH config updated to use McCain key"
+
+        # Step 4: Load key into ssh-agent for this session
+        try {
+            Start-Service ssh-agent -ErrorAction SilentlyContinue
+            & ssh-add $mccainKey 2>$null
+        } catch {}
+    }
+
+    # ── Check current SSH session ─────────────────────────────────────────────
     try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
     if ($sshOut -match "Hi ") {
-        Write-Ok "SSH access to github.com"
+        $ghUser = if ($sshOut -match "Hi ([^!]+)!") { $Matches[1].Trim() } else { "unknown" }
+        Write-Ok "SSH access to github.com  (authenticated as: $ghUser)"
         $script:SkillsAuthMode = "ssh"
+
+        # Confirm this is the correct McCain corporate account
+        if (-not $script:Silent) {
+            $confirm = Read-Prompt "Is '$ghUser' your McCain corporate GitHub account? (y/n)" "y"
+            if ($confirm -notin @("y","Y")) {
+                Write-Msg "Re-authenticating — please sign in with your McCain account in the browser..."
+                try { & gh auth login --web --git-protocol https --scopes admin:public_key } catch {}
+                try { & gh auth setup-git 2>$null } catch {}
+
+                # Set up dedicated McCain SSH key for the newly authenticated account
+                Invoke-McCainSshKeySetup
+
+                # Re-test SSH with the new McCain key
+                Write-Msg "Re-testing SSH access..."
+                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
+                if ($sshOut -match "Hi ([^!]+)!") {
+                    $ghUser = $Matches[1].Trim()
+                    Write-Ok "Re-authenticated as: $ghUser"
+                    $script:SkillsAuthMode = "ssh"
+                } else {
+                    Write-Warn "SSH not confirmed after re-auth — will use HTTPS with gh credentials"
+                    $script:SkillsAuthMode = "https"
+                }
+            }
+        }
+
     } else {
         Write-Warn "SSH access to github.com not verified"
         Write-Host ""
         $doSetup = Read-Prompt "Authenticate with GitHub to set up SSH keys automatically? (y/n)" "y"
         if ($doSetup -in @("y","Y")) {
+            Write-Msg "Opening browser for GitHub authentication..."
+            try { & gh auth login --web --git-protocol https --scopes admin:public_key } catch {}
+            try { & gh auth setup-git 2>$null } catch {}
 
-            # Generate SSH key pair if none exists
-            $sshKeyFile = Join-Path $env:USERPROFILE ".ssh\id_ed25519"
-            if (-not (Test-Path "$sshKeyFile") -and -not (Test-Path (Join-Path $env:USERPROFILE ".ssh\id_rsa"))) {
-                Write-Msg "Generating SSH key pair..."
-                $gitEmail = & git config --global user.email 2>$null
-                $keyComment = if ($gitEmail) { $gitEmail } else { "$env:USERNAME@$env:COMPUTERNAME" }
-                New-Item -ItemType Directory -Path (Join-Path $env:USERPROFILE ".ssh") -Force -ErrorAction SilentlyContinue | Out-Null
-                & ssh-keygen -t ed25519 -C $keyComment -f $sshKeyFile -N '""'
-                # Start ssh-agent and add key
-                try {
-                    Start-Service ssh-agent -ErrorAction SilentlyContinue
-                    & ssh-add $sshKeyFile 2>$null
-                } catch {}
-                Write-Ok "SSH key pair generated"
-            }
+            # Set up dedicated McCain SSH key
+            Invoke-McCainSshKeySetup
 
-            # Find the public key file
-            $pubKeyFile = ""
-            foreach ($f in @("$sshKeyFile.pub", (Join-Path $env:USERPROFILE ".ssh\id_rsa.pub"), (Join-Path $env:USERPROFILE ".ssh\id_ecdsa.pub"))) {
-                if (Test-Path $f) { $pubKeyFile = $f; break }
-            }
-
-            if ($pubKeyFile) {
-                # Authenticate gh CLI via web OAuth (browser popup)
-                Write-Msg "Opening browser for GitHub authentication..."
-                try { & gh auth login --web --git-protocol ssh } catch {}
-
-                # Add SSH public key to GitHub automatically via API
-                $hostLabel = "Enterprise ADK - $env:COMPUTERNAME"
-                Write-Msg "Registering SSH public key on GitHub..."
-                try {
-                    & gh ssh-key add $pubKeyFile --title $hostLabel 2>$null
-                    Write-Ok "SSH public key registered on GitHub ($hostLabel)"
-                } catch {
-                    Write-Warn "Key may already be registered — continuing"
-                }
-
-                # Configure git HTTPS credential helper as fallback
-                try { & gh auth setup-git 2>$null } catch {}
-
-                # Re-test SSH
-                Write-Host ""
-                Write-Msg "Re-testing SSH access..."
-                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
-                if ($sshOut -match "Hi ") {
-                    Write-Ok "SSH access to github.com verified"
-                    $script:SkillsAuthMode = "ssh"
-                } else {
-                    Write-Warn "SSH not verified yet — will use HTTPS with gh credentials"
-                    $script:SkillsAuthMode = "https"
-                }
+            # Re-test SSH
+            Write-Msg "Re-testing SSH access..."
+            try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
+            if ($sshOut -match "Hi ([^!]+)!") {
+                $ghUser = $Matches[1].Trim()
+                Write-Ok "SSH access to github.com verified  (authenticated as: $ghUser)"
+                $script:SkillsAuthMode = "ssh"
             } else {
-                Write-Warn "No SSH key found after setup — falling back to HTTPS"
+                Write-Warn "SSH not verified yet — will use HTTPS with gh credentials"
                 $script:SkillsAuthMode = "https"
             }
         } else {
@@ -437,7 +500,28 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             $script:SkillsAuthMode = "skip"
         }
     }
+
+    # ── Proactive repo access check ───────────────────────────────────────────
+    if ($script:SkillsAuthMode -ne "skip" -and (Get-Command gh -ErrorAction SilentlyContinue)) {
+        & gh auth status 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $skillsRepoPath = $EnterpriseSkillsRepo -replace '^git@github\.com:', '' -replace '\.git$', ''
+            Write-Msg "Checking access to enterprise skills repo..."
+            & gh api "repos/$skillsRepoPath" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Enterprise skills repo accessible"
+            } else {
+                Write-Warn "Account '$ghUser' does not have access to: $EnterpriseSkillsRepo"
+                Write-Msg  "  Contact your administrator to get access, then re-run:"
+                Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+                Write-Msg  "  Continuing with MCP and other setup..."
+                $script:SkillsAuthMode = "skip"
+            }
+        }
+    }
 }
+
+if (-not $script:SkillsOnly) {
 
 # uv (Python package manager for MCP server)
 if (Get-Command uv -ErrorAction SilentlyContinue) {
@@ -470,9 +554,13 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
     }
 }
 
+} # end SkillsOnly skip (uv + Databricks CLI)
+
 # =============================================================================
 # -- STEP 3: DATABRICKS WORKSPACE & PROFILE -----------------------------------
 # =============================================================================
+
+if (-not $script:SkillsOnly) {
 
 Write-Step "Step 3 of 9 — Databricks Workspace & Profile"
 
@@ -595,6 +683,8 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
     }
 }
 
+} # end SkillsOnly skip (Steps 3 + 4)
+
 # =============================================================================
 # -- STEP 5: DATABRICKS MCP ---------------------------------------------------
 # =============================================================================
@@ -649,6 +739,8 @@ Write-Ok "Databricks MCP  ->  $McpConfig"
 # =============================================================================
 # -- STEP 6: GITHUB MCP -------------------------------------------------------
 # =============================================================================
+
+if (-not $script:SkillsOnly) {
 
 Write-Step "Step 6 of 9 — GitHub MCP"
 
@@ -722,6 +814,9 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         Write-Msg "Starting OAuth flow — a browser window will open."
         Write-Msg "Sign in with your Atlassian account, then press Enter here to continue."
         Write-Host ""
+        # Kill any leftover mcp-remote listener on the OAuth callback port (port 3736)
+        # A previous installer run may have left a process holding the port.
+        try { Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } } catch {}
         $atlProc = Start-Process -FilePath "cmd.exe" `
             -ArgumentList "/c", "npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first" `
             -PassThru -WindowStyle Minimized
@@ -738,6 +833,8 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
 } else {
     Write-Warn "npx not found — Atlassian MCP OAuth skipped. Install Node.js first."
 }
+
+} # end SkillsOnly skip (Steps 6 + 7)
 
 # =============================================================================
 # -- STEP 8: SKILLS + SETTINGS ------------------------------------------------
@@ -863,7 +960,7 @@ if ($script:InstallSkills) {
                 $entCount++
             }
         }
-        Write-Ok "Enterprise skills  ($entCount installed)  <- $entSource"
+        Write-Ok "Enterprise skills  ($entCount installed)  ->  $skillsDest"
     } else {
         Write-Warn "No enterprise skills source found — skipping"
     }
@@ -872,6 +969,8 @@ if ($script:InstallSkills) {
 # =============================================================================
 # -- STEP 9: WORKSPACE + VERSION LOCK -----------------------------------------
 # =============================================================================
+
+if (-not $script:SkillsOnly) {
 
 Write-Step "Step 9 of 9 — Workspace + Version Lock"
 
@@ -964,24 +1063,40 @@ $lock | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $StateDirPath "version.
 Write-Ok "$StateSubdir/metadata.json"
 Write-Ok "$StateSubdir/version.lock"
 
+} # end SkillsOnly skip (Step 9)
+
 # =============================================================================
 # -- SUMMARY ------------------------------------------------------------------
 # =============================================================================
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║   v  Workspace Ready                                   ║" -ForegroundColor Green
-Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Green
-Write-Host ""
-Write-Host ("  {0,-20} {1}" -f "Project",           $script:ProjectDir)
-Write-Host ("  {0,-20} {1}" -f "Enterprise",        $EnterpriseDisplay)
-Write-Host ("  {0,-20} {1}" -f "Workspace",         $script:WorkspaceUrl)
-Write-Host ("  {0,-20} {1}" -f "Profile",           $script:Profile_)
-Write-Host ("  {0,-20} {1}" -f "Databricks skills", "$dbCount installed")
-Write-Host ("  {0,-20} {1}" -f "Enterprise skills", "$entCount installed")
-Write-Host ("  {0,-20} {1}" -f "MCP config",        $McpConfig)
-Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Open your project in Claude Code:  claude $($script:ProjectDir)" -ForegroundColor Cyan
-Write-Host "  2. MCP + skills are active — try: `"List my SQL warehouses`""
+if ($script:SkillsOnly) {
+    Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║   ✓  Skills Updated                                    ║" -ForegroundColor Green
+    Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("  {0,-20} {1}" -f "Project",           $script:ProjectDir)
+    Write-Host ("  {0,-20} {1}" -f "Databricks skills", "$dbCount installed")
+    Write-Host ("  {0,-20} {1}" -f "Enterprise skills", "$entCount installed")
+    Write-Host ""
+    Write-Host "Next steps:" -ForegroundColor Cyan
+    Write-Host "  1. Open your project in Claude Code:  claude $($script:ProjectDir)" -ForegroundColor Cyan
+    Write-Host "  2. Skills are active — try: `"List my SQL warehouses`""
+} else {
+    Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║   ✓  Workspace Ready                                   ║" -ForegroundColor Green
+    Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host ("  {0,-20} {1}" -f "Project",           $script:ProjectDir)
+    Write-Host ("  {0,-20} {1}" -f "Enterprise",        $EnterpriseDisplay)
+    Write-Host ("  {0,-20} {1}" -f "Workspace",         $script:WorkspaceUrl)
+    Write-Host ("  {0,-20} {1}" -f "Profile",           $script:Profile_)
+    Write-Host ("  {0,-20} {1}" -f "Databricks skills", "$dbCount installed")
+    Write-Host ("  {0,-20} {1}" -f "Enterprise skills", "$entCount installed")
+    Write-Host ("  {0,-20} {1}" -f "MCP config",        $McpConfig)
+    Write-Host ""
+    Write-Host "Next steps:" -ForegroundColor Cyan
+    Write-Host "  1. Open your project in Claude Code:  claude $($script:ProjectDir)" -ForegroundColor Cyan
+    Write-Host "  2. MCP + skills are active — try: `"List my SQL warehouses`""
+}
 Write-Host ""

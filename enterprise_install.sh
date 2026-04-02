@@ -116,6 +116,7 @@ SCOPE="${DEVKIT_SCOPE:-project}"
 FORCE="${DEVKIT_FORCE:-false}"
 INSTALL_MCP=true
 INSTALL_SKILLS=true
+SKILLS_ONLY=false
 SKILLS_PROFILE=""
 SILENT=false
 PROFILE_PROVIDED=false
@@ -135,7 +136,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         -p|--profile)      PROFILE="$2"; PROFILE_PROVIDED=true; shift 2 ;;
         -g|--global)       SCOPE="global"; shift ;;
-        --skills-only)     INSTALL_MCP=false; shift ;;
+        --skills-only)     INSTALL_MCP=false; SKILLS_ONLY=true; shift ;;
         --mcp-only)        INSTALL_SKILLS=false; shift ;;
         --skills-profile)  SKILLS_PROFILE="$2"; shift 2 ;;
         --silent)          SILENT=true; shift ;;
@@ -149,7 +150,7 @@ while [ $# -gt 0 ]; do
             echo "Options:"
             echo "  -p, --profile NAME     Databricks profile (default: DEFAULT)"
             echo "  -g, --global           Install globally (not per-project)"
-            echo "  --skills-only          Skip MCP server setup"
+            echo "  --skills-only          Fast path: only update skills (skip Steps 3-7, 9)"
             echo "  --mcp-only             Skip skills installation"
             echo "  --skills-profile LIST  Skill profiles: all,data-engineer,analyst,ai-ml-engineer,app-developer"
             echo "  --silent               No output except errors"
@@ -310,12 +311,12 @@ echo ""
 # ── STEP 1: PROJECT DIRECTORY ─────────────────────────────────────────────────
 # =============================================================================
 
-step "Step 1 of 9 — Project Directory"
-
-if [ -n "${1:-}" ] && [ -d "$1" ]; then
-    PROJECT_DIR="$(cd "$1" && pwd)"
+if [ "$SKILLS_ONLY" = true ]; then
+    # In skills-only mode just use the current directory — no prompt needed
+    PROJECT_DIR="$(pwd)"
     ok "Project dir: $PROJECT_DIR"
 else
+    step "Step 1 of 9 — Project Directory"
     PROJECT_DIR=$(prompt "Project directory" "$(pwd)")
     mkdir -p "$PROJECT_DIR"
     PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
@@ -328,9 +329,13 @@ STATE_DIR_PATH="$PROJECT_DIR/$STATE_SUBDIR"
 
 mkdir -p \
     "$PROJECT_DIR/.claude/skills" \
-    "$STATE_DIR_PATH" \
-    "$PROJECT_DIR/src/generated" \
-    "$PROJECT_DIR/instruction-templates"
+    "$STATE_DIR_PATH"
+
+if [ "$SKILLS_ONLY" = false ]; then
+    mkdir -p \
+        "$PROJECT_DIR/src/generated" \
+        "$PROJECT_DIR/instruction-templates"
+fi
 
 ok "Workspace directories created"
 
@@ -339,6 +344,8 @@ ok "Workspace directories created"
 # =============================================================================
 
 step "Step 2 of 9 — Prerequisites"
+
+if [ "$SKILLS_ONLY" = false ]; then
 
 # ── git ───────────────────────────────────────────────────────────────────────
 if command -v git >/dev/null 2>&1; then
@@ -411,7 +418,9 @@ else
     fi
 fi
 
-# ── gh CLI (needed for GitHub MCP OAuth) ──────────────────────────────────────
+fi  # end SKILLS_ONLY skip
+
+# ── gh CLI (needed for GitHub MCP OAuth + SSH key setup) ──────────────────────
 if command -v gh >/dev/null 2>&1; then
     ok "gh CLI: $(gh --version 2>&1 | head -1)"
 else
@@ -446,62 +455,116 @@ if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; th
 
     _ssh_check() { ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 || true; }
 
+    # ── Dedicated McCain SSH key setup ────────────────────────────────────────
+    # Uses ~/.ssh/id_ed25519_mccain — created once, reused across all projects.
+    # Updates ~/.ssh/config so SSH always picks this key for github.com.
+    _setup_mccain_ssh_key() {
+        local mccain_key="$HOME/.ssh/id_ed25519_mccain"
+        mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+
+        # Step 1: Generate key only if it does not already exist
+        if [ ! -f "$mccain_key" ]; then
+            msg "Generating dedicated McCain SSH key..."
+            local git_email
+            git_email=$(gh api user --jq '.email' 2>/dev/null || echo "")
+            ssh-keygen -t ed25519 -C "${git_email:-mccain-adk}" -f "$mccain_key" -N "" < /dev/tty
+            ok "McCain SSH key generated: $mccain_key"
+        else
+            ok "Existing McCain SSH key found — reusing"
+        fi
+
+        # Step 2: Register on GitHub only if not already there
+        local local_fp
+        local_fp=$(ssh-keygen -lf "${mccain_key}.pub" 2>/dev/null | awk '{print $2}') || true
+        if [ -n "$local_fp" ] && gh ssh-key list 2>/dev/null | grep -q "$local_fp"; then
+            ok "McCain SSH key already registered on GitHub"
+        else
+            local host_label="Enterprise ADK - $(hostname)"
+            msg "Registering McCain SSH key on GitHub..."
+            local add_err
+            if add_err=$(gh ssh-key add "${mccain_key}.pub" --title "$host_label" 2>&1); then
+                ok "McCain SSH key registered on GitHub ($host_label)"
+            else
+                warn "Could not register key: $add_err"
+            fi
+        fi
+
+        # Step 3: Update ~/.ssh/config to always use this key for github.com
+        local ssh_config="$HOME/.ssh/config"
+        touch "$ssh_config" && chmod 600 "$ssh_config"
+        python3 -c "
+import re, pathlib
+cfg = pathlib.Path('$ssh_config')
+content = cfg.read_text() if cfg.exists() else ''
+block = '\nHost github.com\n  IdentityFile $mccain_key\n  IdentitiesOnly yes\n'
+new_content = re.sub(r'\nHost github\.com\n(?:[ \t]+[^\n]*\n)*', block, content)
+if new_content == content:
+    new_content = content.rstrip('\n') + block
+cfg.write_text(new_content)
+" 2>/dev/null || {
+            grep -q "Host github.com" "$ssh_config" 2>/dev/null \
+                || printf '\nHost github.com\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$mccain_key" >> "$ssh_config"
+        }
+        ok "~/.ssh/config updated to use McCain key"
+
+        # Step 4: Load key into ssh-agent for this session
+        eval "$(ssh-agent -s)" 2>/dev/null || true
+        ssh-add "$mccain_key" 2>/dev/null || true
+    }
+
+    # ── Check current SSH session ─────────────────────────────────────────────
     ssh_out=$(_ssh_check)
     if echo "$ssh_out" | grep -q "Hi "; then
-        ok "SSH access to github.com"
+        gh_user=$(echo "$ssh_out" | sed -n 's/.*Hi \([^!]*\)!.*/\1/p')
+        ok "SSH access to github.com  (authenticated as: ${gh_user:-unknown})"
         SKILLS_AUTH_MODE="ssh"
+
+        # Confirm this is the correct McCain corporate account
+        if [ "$SILENT" = false ]; then
+            confirm=$(prompt "Is '${gh_user:-unknown}' your McCain corporate GitHub account? (y/n)" "y")
+            if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+                msg "Re-authenticating — please sign in with your McCain account in the browser..."
+                gh auth login --web --git-protocol https --scopes admin:public_key < /dev/tty || true
+                gh auth setup-git 2>/dev/null || true
+
+                # Set up dedicated McCain SSH key for the newly authenticated account
+                _setup_mccain_ssh_key
+
+                # Re-test SSH with the new McCain key
+                msg "Re-testing SSH access..."
+                ssh_out=$(_ssh_check)
+                if echo "$ssh_out" | grep -q "Hi "; then
+                    gh_user=$(echo "$ssh_out" | sed -n 's/.*Hi \([^!]*\)!.*/\1/p')
+                    ok "Re-authenticated as: ${gh_user:-unknown}"
+                    SKILLS_AUTH_MODE="ssh"
+                else
+                    warn "SSH not confirmed after re-auth — will use HTTPS with gh credentials"
+                    SKILLS_AUTH_MODE="https"
+                fi
+            fi
+        fi
+
     else
         warn "SSH access to github.com not verified"
         echo ""
         do_setup=$(prompt "Authenticate with GitHub to set up SSH keys automatically? (y/n)" "y")
         if [ "$do_setup" = "y" ] || [ "$do_setup" = "Y" ]; then
+            msg "Opening browser for GitHub authentication..."
+            gh auth login --web --git-protocol https --scopes admin:public_key < /dev/tty || true
+            gh auth setup-git 2>/dev/null || true
 
-            # Generate SSH key pair if none exists
-            if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
-                msg "Generating SSH key pair..."
-                git_email=$(git config --global user.email 2>/dev/null || echo "")
-                mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-                ssh-keygen -t ed25519 -C "${git_email:-$(whoami)@$(hostname)}" \
-                    -f "$HOME/.ssh/id_ed25519" -N "" < /dev/tty
-                eval "$(ssh-agent -s)" 2>/dev/null || true
-                ssh-add "$HOME/.ssh/id_ed25519" 2>/dev/null || true
-                ok "SSH key pair generated"
-            fi
+            # Set up dedicated McCain SSH key
+            _setup_mccain_ssh_key
 
-            # Find the public key file
-            PUB_KEY_FILE=""
-            for f in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
-                [ -f "$f" ] && PUB_KEY_FILE="$f" && break
-            done
-
-            if [ -n "$PUB_KEY_FILE" ]; then
-                # Authenticate gh CLI via web OAuth (browser popup)
-                msg "Opening browser for GitHub authentication..."
-                gh auth login --web --git-protocol ssh < /dev/tty || true
-
-                # Add SSH public key to GitHub automatically via API
-                HOST_LABEL="Enterprise ADK - $(hostname)"
-                msg "Registering SSH public key on GitHub..."
-                gh ssh-key add "$PUB_KEY_FILE" --title "$HOST_LABEL" 2>/dev/null \
-                    && ok "SSH public key registered on GitHub ($HOST_LABEL)" \
-                    || warn "Key may already be registered — continuing"
-
-                # Configure git HTTPS credential helper as fallback
-                gh auth setup-git 2>/dev/null || true
-
-                # Re-test SSH
-                echo ""
-                msg "Re-testing SSH access..."
-                ssh_out=$(_ssh_check)
-                if echo "$ssh_out" | grep -q "Hi "; then
-                    ok "SSH access to github.com verified"
-                    SKILLS_AUTH_MODE="ssh"
-                else
-                    warn "SSH not verified yet — will use HTTPS with gh credentials"
-                    SKILLS_AUTH_MODE="https"
-                fi
+            # Re-test SSH
+            msg "Re-testing SSH access..."
+            ssh_out=$(_ssh_check)
+            if echo "$ssh_out" | grep -q "Hi "; then
+                gh_user=$(echo "$ssh_out" | sed -n 's/.*Hi \([^!]*\)!.*/\1/p')
+                ok "SSH access to github.com verified  (authenticated as: ${gh_user:-unknown})"
+                SKILLS_AUTH_MODE="ssh"
             else
-                warn "No SSH key found after setup — falling back to HTTPS"
+                warn "SSH not verified yet — will use HTTPS with gh credentials"
                 SKILLS_AUTH_MODE="https"
             fi
         else
@@ -510,11 +573,28 @@ if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; th
             SKILLS_AUTH_MODE="skip"
         fi
     fi
+
+    # ── Proactive repo access check ───────────────────────────────────────────
+    if [ "$SKILLS_AUTH_MODE" != "skip" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        SKILLS_REPO_PATH=$(echo "$ENTERPRISE_SKILLS_REPO" | sed 's|git@github\.com:||;s|\.git$||')
+        msg "Checking access to enterprise skills repo..."
+        if gh api "repos/$SKILLS_REPO_PATH" >/dev/null 2>&1; then
+            ok "Enterprise skills repo accessible"
+        else
+            warn "Account '${gh_user:-unknown}' does not have access to: $ENTERPRISE_SKILLS_REPO"
+            msg "  Contact your administrator to get access, then re-run:"
+            msg "    bash $0 --skills-only"
+            msg "  Continuing with MCP and other setup..."
+            SKILLS_AUTH_MODE="skip"
+        fi
+    fi
 fi
 
 # =============================================================================
 # ── STEP 3: DATABRICKS WORKSPACE & PROFILE ────────────────────────────────────
 # =============================================================================
+
+if [ "$SKILLS_ONLY" = false ]; then
 
 step "Step 3 of 9 — Databricks Workspace & Profile"
 
@@ -657,6 +737,8 @@ else
     fi
 fi
 
+fi  # end SKILLS_ONLY skip (Steps 3 + 4)
+
 # =============================================================================
 # ── STEP 5: DATABRICKS MCP ───────────────────────────────────────────────────
 # =============================================================================
@@ -706,6 +788,8 @@ ok "Databricks MCP  →  $MCP_CONFIG"
 # =============================================================================
 # ── STEP 6: GITHUB MCP ───────────────────────────────────────────────────────
 # =============================================================================
+
+if [ "$SKILLS_ONLY" = false ]; then
 
 step "Step 6 of 9 — GitHub MCP"
 
@@ -789,6 +873,9 @@ if command -v npx >/dev/null 2>&1; then
         msg "Starting OAuth flow — a browser window will open."
         msg "Sign in with your Atlassian account, then press Enter here to continue."
         echo ""
+        # Kill any leftover mcp-remote listener on the OAuth callback port (port 3736)
+        # A previous installer run may have left a process holding the port.
+        lsof -ti tcp:3736 2>/dev/null | xargs kill -9 2>/dev/null || true
         NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}" npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first &
         ATLASSIAN_PID=$!
         sleep 4
@@ -802,6 +889,8 @@ if command -v npx >/dev/null 2>&1; then
 else
     warn "npx not found — Atlassian MCP OAuth skipped. Install Node.js first."
 fi
+
+fi  # end SKILLS_ONLY skip (Steps 6 + 7)
 
 # =============================================================================
 # ── STEP 8: SKILLS + SETTINGS ────────────────────────────────────────────────
@@ -933,7 +1022,7 @@ if [ "$INSTALL_SKILLS" = true ]; then
             cp -r "$skill_dir" "$SKILLS_DEST/$name"
             ENT_COUNT=$((ENT_COUNT + 1))
         done
-        ok "Enterprise skills  ($ENT_COUNT installed)  ← $ENT_SOURCE"
+        ok "Enterprise skills  ($ENT_COUNT installed)  ->  $SKILLS_DEST"
     else
         warn "No enterprise skills source found — skipping"
     fi
@@ -942,6 +1031,8 @@ fi
 # =============================================================================
 # ── STEP 9: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
 # =============================================================================
+
+if [ "$SKILLS_ONLY" = false ]; then
 
 step "Step 9 of 9 — Workspace + Version Lock"
 
@@ -1033,24 +1124,40 @@ lock = {
 ok "$STATE_SUBDIR/metadata.json"
 ok "$STATE_SUBDIR/version.lock"
 
+fi  # end SKILLS_ONLY skip (Step 9)
+
 # =============================================================================
 # ── SUMMARY ───────────────────────────────────────────────────────────────────
 # =============================================================================
 
 echo ""
-printf "${G}╔════════════════════════════════════════════════════════╗${N}\n"
-printf "${G}║   ✓  Workspace Ready                                   ║${N}\n"
-printf "${G}╚════════════════════════════════════════════════════════╝${N}\n"
-echo ""
-printf "  ${B}%-20s${N} %s\n" "Project"           "$PROJECT_DIR"
-printf "  ${B}%-20s${N} %s\n" "Enterprise"        "$ENTERPRISE_DISPLAY"
-printf "  ${B}%-20s${N} %s\n" "Workspace"         "$WORKSPACE_URL"
-printf "  ${B}%-20s${N} %s\n" "Profile"           "$PROFILE"
-printf "  ${B}%-20s${N} %s\n" "Databricks skills" "${DB_COUNT:-0} installed"
-printf "  ${B}%-20s${N} %s\n" "Enterprise skills" "${ENT_COUNT:-0} installed"
-printf "  ${B}%-20s${N} %s\n" "MCP config"        "$MCP_CONFIG"
-echo ""
-echo "Next steps:"
-printf "  1. Open your project in Claude Code:  ${CY}claude %s${N}\n" "$PROJECT_DIR"
-echo "  2. MCP + skills are active — try: \"List my SQL warehouses\""
+if [ "$SKILLS_ONLY" = true ]; then
+    printf "${G}╔════════════════════════════════════════════════════════╗${N}\n"
+    printf "${G}║   ✓  Skills Updated                                    ║${N}\n"
+    printf "${G}╚════════════════════════════════════════════════════════╝${N}\n"
+    echo ""
+    printf "  ${B}%-20s${N} %s\n" "Project"           "$PROJECT_DIR"
+    printf "  ${B}%-20s${N} %s\n" "Databricks skills" "${DB_COUNT:-0} installed"
+    printf "  ${B}%-20s${N} %s\n" "Enterprise skills" "${ENT_COUNT:-0} installed"
+    echo ""
+    echo "Next steps:"
+    printf "  1. Open your project in Claude Code:  ${CY}claude %s${N}\n" "$PROJECT_DIR"
+    echo "  2. Skills are active — try: \"List my SQL warehouses\""
+else
+    printf "${G}╔════════════════════════════════════════════════════════╗${N}\n"
+    printf "${G}║   ✓  Workspace Ready                                   ║${N}\n"
+    printf "${G}╚════════════════════════════════════════════════════════╝${N}\n"
+    echo ""
+    printf "  ${B}%-20s${N} %s\n" "Project"           "$PROJECT_DIR"
+    printf "  ${B}%-20s${N} %s\n" "Enterprise"        "$ENTERPRISE_DISPLAY"
+    printf "  ${B}%-20s${N} %s\n" "Workspace"         "$WORKSPACE_URL"
+    printf "  ${B}%-20s${N} %s\n" "Profile"           "$PROFILE"
+    printf "  ${B}%-20s${N} %s\n" "Databricks skills" "${DB_COUNT:-0} installed"
+    printf "  ${B}%-20s${N} %s\n" "Enterprise skills" "${ENT_COUNT:-0} installed"
+    printf "  ${B}%-20s${N} %s\n" "MCP config"        "$MCP_CONFIG"
+    echo ""
+    echo "Next steps:"
+    printf "  1. Open your project in Claude Code:  ${CY}claude %s${N}\n" "$PROJECT_DIR"
+    echo "  2. MCP + skills are active — try: \"List my SQL warehouses\""
+fi
 echo ""
