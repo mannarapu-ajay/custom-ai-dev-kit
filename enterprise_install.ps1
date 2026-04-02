@@ -1,4 +1,4 @@
-﻿#
+#
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
@@ -15,7 +15,7 @@
 $ErrorActionPreference = "Stop"
 
 # =============================================================================
-# ── ENTERPRISE CONFIGURATION  (edit this section for your organisation) ──────
+# -- ENTERPRISE CONFIGURATION  (edit this section for your organisation) ------
 # =============================================================================
 
 $EnterpriseName    = "McCain"
@@ -23,12 +23,12 @@ $EnterpriseDisplay = "McCain"
 $EnterpriseOrg     = "McCainFoods"   # GitHub org or user that owns the enterprise skills repo
 
 # Enterprise skills source mode.
-#   "git"   — clone/pull from a private remote repo (derived from EnterpriseOrg + EnterpriseName)
-#   "local" — use a path on disk (set EnterpriseSkillsPath below; defaults to .\enterprise_skills\)
+#   "git"   - clone/pull from a private remote repo (derived from EnterpriseOrg + EnterpriseName)
+#   "local" - use a path on disk (set EnterpriseSkillsPath below; defaults to .\enterprise_skills\)
 $EnterpriseSkillsMode = "git"
 
 # Used when EnterpriseSkillsMode = "git"
-# Repo URL — defaults to <EnterpriseOrg>/<EnterpriseName>-skills if left as-is.
+# Repo URL - defaults to <EnterpriseOrg>/<EnterpriseName>-skills if left as-is.
 # Override with any SSH clone URL if your skills live in a different repo.
 $EnterpriseSkillsRepo = "git@github.com:${EnterpriseOrg}/DAIA-data-architecture-skills.git"
 # Subfolder inside the repo where skill directories live.
@@ -41,12 +41,12 @@ $EnterpriseSkillsRepoSubpath = "mccain-data-architecture-skills"
 # Or set an absolute path to any directory that contains skill sub-folders.
 $EnterpriseSkillsPath = ""
 
-# GitHub Enterprise — set if your org uses GitHub Enterprise Server (not github.com).
+# GitHub Enterprise - set if your org uses GitHub Enterprise Server (not github.com).
 # Example: "https://github.mccainfoods.com/api/v3"
 # Leave empty to use public github.com.
 $GitHubApiUrl = ""
 
-# Databricks workspace catalog — add or remove entries as domains change.
+# Databricks workspace catalog - add or remove entries as domains change.
 $WorkspaceNames = @(
     "Growth", "Supply Chain", "Finance", "Agriculture",
     "HR", "Procurement", "EDP", "Enter URL manually"
@@ -63,7 +63,7 @@ $WorkspaceUrls = @(
 )
 
 # =============================================================================
-# ── PATHS  (derived — do not edit) ───────────────────────────────────────────
+# -- PATHS  (derived - do not edit) -------------------------------------------
 # =============================================================================
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -77,8 +77,25 @@ $EntSkillsRepoDir = Join-Path $InstallDir "$EnterpriseName-skills-repo"
 $UpdateCheckCmd   = "powershell -File `"$(Join-Path $ScriptDir '.claude-plugin\check_update.ps1')`""
 $StateSubdir      = ".$EnterpriseName-adk"
 
+# Early sanity check - confirm this is the correct repo directory
+if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server")) -or
+    -not (Test-Path (Join-Path $ScriptDir "databricks-tools-core"))) {
+    Write-Host ""
+    Write-Host "  x Could not locate the custom-ai-dev-kit repo at: $ScriptDir" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Do NOT copy this script - run it directly using its full path from any directory:"
+    Write-Host ""
+    Write-Host "    powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1"
+    Write-Host ""
+    Write-Host "  You can run this from inside your project directory, e.g.:"
+    Write-Host "    cd C:\my-project"
+    Write-Host "    powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1"
+    Write-Host ""
+    exit 1
+}
+
 # =============================================================================
-# ── DEFAULTS  (overridable by flags / env vars) ───────────────────────────────
+# -- DEFAULTS  (overridable by flags / env vars) -------------------------------
 # =============================================================================
 
 $script:Profile_        = if ($env:DEVKIT_PROFILE) { $env:DEVKIT_PROFILE } else { "DEFAULT" }
@@ -93,19 +110,19 @@ $script:ProjectDir      = ""
 $script:WorkspaceUrl    = ""
 
 # =============================================================================
-# ── PARSE FLAGS ───────────────────────────────────────────────────────────────
+# -- PARSE FLAGS --------------------------------------------------------------
 # =============================================================================
 
 $i = 0
 while ($i -lt $args.Count) {
     switch ($args[$i]) {
-        { $_ -in "-p","--profile","-Profile" }      { $script:Profile_ = $args[$i+1]; $script:ProfileProvided = $true; $i += 2 }
-        { $_ -in "-g","--global","-Global" }         { $script:Scope = "global"; $i++ }
-        { $_ -in "--skills-only","-SkillsOnly" }     { $script:InstallMcp = $false; $i++ }
-        { $_ -in "--mcp-only","-McpOnly" }           { $script:InstallSkills = $false; $i++ }
+        { $_ -in "-p","--profile","-Profile" }       { $script:Profile_ = $args[$i+1]; $script:ProfileProvided = $true; $i += 2 }
+        { $_ -in "-g","--global","-Global" }          { $script:Scope = "global"; $i++ }
+        { $_ -in "--skills-only","-SkillsOnly" }      { $script:InstallMcp = $false; $i++ }
+        { $_ -in "--mcp-only","-McpOnly" }            { $script:InstallSkills = $false; $i++ }
         { $_ -in "--skills-profile","-SkillsProfile" }{ $script:SkillsProfile = $args[$i+1]; $i += 2 }
-        { $_ -in "--silent","-Silent" }              { $script:Silent = $true; $i++ }
-        { $_ -in "-f","--force","-Force" }           { $script:Force = $true; $i++ }
+        { $_ -in "--silent","-Silent" }               { $script:Silent = $true; $i++ }
+        { $_ -in "-f","--force","-Force" }            { $script:Force = $true; $i++ }
         { $_ -in "-h","--help","-Help" } {
             Write-Host ""
             Write-Host "$EnterpriseDisplay Enterprise AI Dev Kit Installer"
@@ -133,7 +150,7 @@ while ($i -lt $args.Count) {
 }
 
 # =============================================================================
-# ── OUTPUT HELPERS ────────────────────────────────────────────────────────────
+# -- OUTPUT HELPERS -----------------------------------------------------------
 # =============================================================================
 
 function Write-Msg  { param($m) if (-not $script:Silent) { Write-Host "  $m" } }
@@ -144,15 +161,15 @@ function Write-Step {
     param($m)
     if (-not $script:Silent) {
         Write-Host ""
-        Write-Host "────────────────────────────────────────────────────────" -ForegroundColor Cyan
+        Write-Host "--------------------------------------------------------" -ForegroundColor Cyan
         Write-Host "  $m" -ForegroundColor White
-        Write-Host "────────────────────────────────────────────────────────" -ForegroundColor Cyan
+        Write-Host "--------------------------------------------------------" -ForegroundColor Cyan
         Write-Host ""
     }
 }
 
 # =============================================================================
-# ── INTERACTIVE HELPERS ───────────────────────────────────────────────────────
+# -- INTERACTIVE HELPERS ------------------------------------------------------
 # =============================================================================
 
 function Read-Prompt {
@@ -165,7 +182,13 @@ function Read-Prompt {
 
 function Invoke-RadioSelect {
     param([string]$Title, [string[]]$Items)
-    # Items format: "Label|Value|Hint"
+
+    if ($script:Silent) {
+        $first = $Items[0] -split '\|'
+        return $first[1]
+    }
+
+    # Parse items: "Label|Value|Hint"
     $labels = @(); $values = @(); $hints = @()
     foreach ($item in $Items) {
         $parts = $item -split '\|', 3
@@ -177,54 +200,84 @@ function Invoke-RadioSelect {
     $cursor   = 0
     $selected = 0
 
+    # Non-interactive fallback (no console / output redirected)
+    if ([Console]::IsOutputRedirected -or [Console]::IsInputRedirected) {
+        Write-Host "  $Title"
+        for ($j = 0; $j -lt $count; $j++) {
+            Write-Host "    $($j+1)) $($labels[$j])  $($hints[$j])"
+        }
+        $raw = Read-Host "  Enter number [1]"
+        $idx = if ($raw -match '^\d+$') { [int]$raw - 1 } else { 0 }
+        if ($idx -lt 0 -or $idx -ge $count) { $idx = 0 }
+        return $values[$idx]
+    }
+
     Write-Host ""
     Write-Host "  $Title" -ForegroundColor White
     Write-Host "  (up/down arrows to navigate, Enter to confirm)" -ForegroundColor DarkGray
     Write-Host ""
 
-    # Reserve lines
+    # Record the row where the list starts, then reserve lines
+    $startRow = [Console]::CursorTop
     for ($r = 0; $r -lt ($count + 2); $r++) { Write-Host "" }
 
-    $draw = {
-        $up = $count + 2
-        [Console]::SetCursorPosition(0, [Console]::CursorTop - $up)
+    # Redraw using absolute cursor positioning - no relative movement artifacts
+    $redraw = {
+        $winW = [Console]::WindowWidth
         for ($idx = 0; $idx -lt $count; $idx++) {
+            [Console]::SetCursorPosition(0, $startRow + $idx)
             $arrow = "    "
             $dot   = "o"
-            $color = "DarkGray"
+            $color = [ConsoleColor]::DarkGray
             if ($idx -eq $cursor)   { $arrow = "  > " }
-            if ($idx -eq $selected) { $dot = "*"; $color = "Green" }
-            $line = "$arrow$dot  $($labels[$idx])   $($hints[$idx])"
-            Write-Host $line.PadRight([Console]::WindowWidth - 1) -ForegroundColor $color
+            if ($idx -eq $selected) { $dot = "*"; $color = [ConsoleColor]::Green }
+            $line = "  $arrow$dot  $($labels[$idx])   $($hints[$idx])"
+            $line = $line.PadRight($winW - 1).Substring(0, [Math]::Min($line.Length + ($winW - 1 - $line.Length), $winW - 1))
+            $prev = [Console]::ForegroundColor
+            [Console]::ForegroundColor = $color
+            [Console]::Write($line.PadRight($winW - 1))
+            [Console]::ForegroundColor = $prev
         }
-        Write-Host ""
-        if ($cursor -eq $count) {
-            Write-Host "  > [ Confirm ]".PadRight([Console]::WindowWidth - 1) -ForegroundColor Cyan
-        } else {
-            Write-Host "    [ Confirm ]".PadRight([Console]::WindowWidth - 1) -ForegroundColor DarkGray
-        }
+        # Blank separator line
+        [Console]::SetCursorPosition(0, $startRow + $count)
+        [Console]::Write("".PadRight([Console]::WindowWidth - 1))
+        # Confirm button
+        [Console]::SetCursorPosition(0, $startRow + $count + 1)
+        $confirmLine = if ($cursor -eq $count) { "  > [ Confirm ]" } else { "    [ Confirm ]" }
+        $confirmColor = if ($cursor -eq $count) { [ConsoleColor]::Cyan } else { [ConsoleColor]::DarkGray }
+        $prev = [Console]::ForegroundColor
+        [Console]::ForegroundColor = $confirmColor
+        [Console]::Write($confirmLine.PadRight([Console]::WindowWidth - 1))
+        [Console]::ForegroundColor = $prev
     }
 
-    & $draw
-
-    while ($true) {
-        $key = [Console]::ReadKey($true)
-        switch ($key.Key) {
-            "UpArrow"   { if ($cursor -gt 0)      { $cursor-- } }
-            "DownArrow" { if ($cursor -lt $count)  { $cursor++ } }
-            "Spacebar"  { if ($cursor -lt $count)  { $selected = $cursor } }
-            "Enter" {
-                if ($cursor -lt $count) { $selected = $cursor }
-                & $draw
-                return $values[$selected]
+    [Console]::CursorVisible = $false
+    try {
+        & $redraw
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                "UpArrow"   { if ($cursor -gt 0)      { $cursor-- } }
+                "DownArrow" { if ($cursor -lt $count)  { $cursor++ } }
+                "Spacebar"  { if ($cursor -lt $count)  { $selected = $cursor } }
+                "Enter" {
+                    if ($cursor -lt $count) { $selected = $cursor }
+                    & $redraw
+                    # Move cursor below the list before returning
+                    [Console]::SetCursorPosition(0, $startRow + $count + 2)
+                    [Console]::CursorVisible = $true
+                    return $values[$selected]
+                }
             }
+            & $redraw
         }
-        & $draw
+    } finally {
+        [Console]::CursorVisible = $true
     }
 }
 
 # =============================================================================
-# ── BANNER ────────────────────────────────────────────────────────────────────
+# -- BANNER -------------------------------------------------------------------
 # =============================================================================
 
 Write-Host ""
@@ -232,9 +285,12 @@ Write-Host "╔═════════════════════�
 Write-Host "║   $EnterpriseDisplay — Enterprise AI Dev Kit Installer         ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
+Write-Warn "NOTE: Do NOT run the official Databricks install.ps1 alongside this script."
+Write-Msg  "  This enterprise installer fully replaces it. Running both will break the MCP config."
+Write-Host ""
 
 # =============================================================================
-# ── STEP 1: PROJECT DIRECTORY ─────────────────────────────────────────────────
+# -- STEP 1: PROJECT DIRECTORY ------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 1 of 9 — Project Directory"
@@ -257,22 +313,53 @@ foreach ($d in @(
 Write-Ok "Workspace directories created"
 
 # =============================================================================
-# ── STEP 2: PREREQUISITES ─────────────────────────────────────────────────────
+# -- STEP 2: PREREQUISITES ----------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 2 of 9 — Prerequisites"
 
 # git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Die "git required. Install: https://git-scm.com" }
-Write-Ok "git"
+$gitVer = & git --version 2>&1
+Write-Ok "git $gitVer"
 
-# npx (needed for Atlassian MCP and GitHub MCP)
+# npx / Node.js (needed for GitHub MCP + Atlassian MCP)
 if (Get-Command npx -ErrorAction SilentlyContinue) {
     $nodeVer = & node --version 2>$null
-    Write-Ok "npx ($nodeVer)"
+    Write-Ok "Node.js $nodeVer / npx"
 } else {
-    Write-Warn "npx not found — required for Atlassian MCP (Confluence + Jira) and GitHub MCP"
-    Write-Msg  "  Install Node.js: https://nodejs.org"
+    Write-Warn "Node.js not found — installing via winget..."
+    try {
+        & winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        if (Get-Command npx -ErrorAction SilentlyContinue) {
+            Write-Ok "Node.js $(& node --version 2>$null) / npx (just installed)"
+        } else {
+            Write-Warn "winget install Node.js succeeded but npx not in PATH yet — restart your terminal or install manually: https://nodejs.org"
+        }
+    } catch {
+        Write-Warn "Could not auto-install Node.js — install manually: https://nodejs.org"
+    }
+}
+
+# gh CLI (needed for GitHub MCP OAuth)
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    $ghVer = & gh --version 2>&1 | Select-Object -First 1
+    Write-Ok "gh CLI: $ghVer"
+} else {
+    Write-Warn "gh CLI not found — installing via winget..."
+    try {
+        & winget install GitHub.cli --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1) (just installed)"
+        } else {
+            Write-Warn "winget install gh CLI succeeded but gh not in PATH yet — restart your terminal or install manually: https://cli.github.com"
+        }
+    } catch {
+        Write-Warn "Could not auto-install gh CLI — install manually: https://cli.github.com"
+    }
 }
 
 # SSH access to GitHub (needed only when pulling enterprise skills from a remote git repo)
@@ -286,12 +373,14 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
     }
 }
 
-# uv
+# uv (Python package manager for MCP server)
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     Write-Ok "$(& uv --version)"
 } else {
     Write-Warn "uv not found — installing..."
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    # Refresh PATH
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Write-Die "uv install failed. Run: Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression" }
     Write-Ok "$(& uv --version) (just installed)"
 }
@@ -300,18 +389,28 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
     Write-Ok "Databricks CLI: $(& databricks --version 2>&1 | Select-Object -First 1)"
 } else {
-    Write-Warn "Databricks CLI not found. Install:"
-    Write-Msg  "  winget install Databricks.DatabricksCLI"
-    Write-Msg  "  You can continue, but authentication will require the CLI later."
+    Write-Warn "Databricks CLI not found — installing via winget..."
+    try {
+        & winget install Databricks.DatabricksCLI --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        if (Get-Command databricks -ErrorAction SilentlyContinue) {
+            Write-Ok "Databricks CLI: $(& databricks --version 2>&1 | Select-Object -First 1) (just installed)"
+        } else {
+            Write-Warn "Databricks CLI installed but not in PATH yet — restart your terminal after this script."
+        }
+    } catch {
+        Write-Warn "Could not auto-install Databricks CLI."
+        Write-Msg  "  Run manually: winget install Databricks.DatabricksCLI"
+    }
 }
 
 # =============================================================================
-# ── STEP 3: DATABRICKS WORKSPACE & PROFILE ────────────────────────────────────
+# -- STEP 3: DATABRICKS WORKSPACE & PROFILE -----------------------------------
 # =============================================================================
 
 Write-Step "Step 3 of 9 — Databricks Workspace & Profile"
 
-# ── Workspace selection ───────────────────────────────────────────────────────
+# -- Workspace selection ------------------------------------------------------
 $wsItems = @()
 for ($wi = 0; $wi -lt $WorkspaceNames.Count; $wi++) {
     $url  = $WorkspaceUrls[$wi]
@@ -331,7 +430,7 @@ if (-not $script:WorkspaceUrl) {
 }
 $script:WorkspaceUrl = $script:WorkspaceUrl.TrimEnd('/')
 
-# ── Profile selection ─────────────────────────────────────────────────────────
+# -- Profile selection --------------------------------------------------------
 if (-not $script:ProfileProvided -and -not $script:Silent) {
     $dbCfg = Join-Path $env:USERPROFILE ".databrickscfg"
     $knownProfiles = @()
@@ -360,11 +459,13 @@ if (-not $script:ProfileProvided -and -not $script:Silent) {
     }
 }
 
-# ── OAuth login if not already authenticated ──────────────────────────────────
+# -- OAuth login if not already authenticated ---------------------------------
 Write-Host ""
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
-    $authJson = & databricks current-user me --profile $script:Profile_ --output json 2>$null
-    $authUser = if ($authJson) { ($authJson | ConvertFrom-Json).userName } else { "" }
+    try {
+        $authJson = & databricks current-user me --profile $script:Profile_ --output json 2>$null
+        $authUser = if ($authJson) { ($authJson | ConvertFrom-Json).userName } else { "" }
+    } catch { $authUser = "" }
     if ($authUser) {
         Write-Ok "Already authenticated as $authUser"
     } else {
@@ -374,14 +475,16 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
 }
 
 # =============================================================================
-# ── STEP 4: AUTHENTICATION + CA CERTIFICATES ─────────────────────────────────
+# -- STEP 4: AUTHENTICATION + CA CERTIFICATES ---------------------------------
 # =============================================================================
 
 Write-Step "Step 4 of 9 — Authentication + CA Certificates"
 
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
-    $authJson = & databricks current-user me --profile $script:Profile_ --output json 2>$null
-    $authUser = if ($authJson) { ($authJson | ConvertFrom-Json).userName } else { "" }
+    try {
+        $authJson = & databricks current-user me --profile $script:Profile_ --output json 2>$null
+        $authUser = if ($authJson) { ($authJson | ConvertFrom-Json).userName } else { "" }
+    } catch { $authUser = "" }
     if ($authUser) {
         Write-Ok "Authenticated as $authUser"
     } else {
@@ -390,11 +493,14 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
     }
 }
 
-# ── Corporate CA certificates ─────────────────────────────────────────────────
+# -- Corporate CA certificates ------------------------------------------------
 $caBundle = Join-Path $env:USERPROFILE ".$EnterpriseName-adk\ca-bundle.pem"
 
 if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
-    # already configured — skip silently
+    # already configured - also configure npm
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        & npm config set cafile $env:NODE_EXTRA_CA_CERTS 2>$null | Out-Null
+    }
 } else {
     Write-Host ""
     Write-Msg "Configuring corporate CA certificates..."
@@ -402,15 +508,21 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
     try {
         # Export from Windows certificate store
         $certs = Get-ChildItem -Path Cert:\LocalMachine\Root
-        $pemContent = foreach ($cert in $certs) {
-            "-----BEGIN CERTIFICATE-----"
-            [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
-            "-----END CERTIFICATE-----"
+        $pemLines = @()
+        foreach ($cert in $certs) {
+            $pemLines += "-----BEGIN CERTIFICATE-----"
+            $pemLines += [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
+            $pemLines += "-----END CERTIFICATE-----"
         }
-        $pemContent | Set-Content $caBundle -Encoding UTF8
+        $pemLines | Set-Content $caBundle -Encoding UTF8
         $env:NODE_EXTRA_CA_CERTS = $caBundle
         # Persist to user environment
         [System.Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", $caBundle, "User")
+        # Configure npm to use the same CA bundle (fixes npx/mcp-remote SSL errors)
+        if (Get-Command npm -ErrorAction SilentlyContinue) {
+            & npm config set cafile $caBundle 2>$null | Out-Null
+        }
+        Write-Ok "CA bundle written -> $caBundle"
     } catch {
         Write-Warn "Could not extract CA certs — set manually:"
         Write-Msg  "  `$env:NODE_EXTRA_CA_CERTS = 'C:\path\to\bundle.crt'"
@@ -418,7 +530,7 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
 }
 
 # =============================================================================
-# ── STEP 5: DATABRICKS MCP ───────────────────────────────────────────────────
+# -- STEP 5: DATABRICKS MCP ---------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 5 of 9 — Databricks MCP"
@@ -429,27 +541,22 @@ if ($script:InstallMcp) {
     Write-Msg "Setting up Databricks MCP server..."
     if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server"))) { Write-Die "databricks-mcp-server not found in $ScriptDir" }
 
+    # Always reinstall from this repo - ensures venv uses custom-ai-dev-kit packages,
+    # not stale ones from a previous official install run.
+    New-Item -ItemType Directory -Path $VenvDir -Force -ErrorAction SilentlyContinue | Out-Null
+    & uv venv --python 3.11 --allow-existing $VenvDir -q 2>$null
+    if ($LASTEXITCODE -ne 0) { & uv venv --allow-existing $VenvDir -q }
+    Write-Msg "Installing Python dependencies..."
+    # --native-tls: use system certificate store (required behind corporate TLS-intercepting proxies)
+    & uv pip install --python $VenvPython --native-tls `
+        -e (Join-Path $ScriptDir "databricks-tools-core") `
+        -e (Join-Path $ScriptDir "databricks-mcp-server") --quiet
     & $VenvPython -c "import databricks_mcp_server" 2>$null
-    $mcpInstalled = ($LASTEXITCODE -eq 0)
-    if ($mcpInstalled) {
-        if ($script:Force) { Write-Msg "Force reinstall..." } else { Write-Ok "MCP server already set up — skipping" }
-    }
-
-    if (-not $mcpInstalled -or $script:Force) {
-        New-Item -ItemType Directory -Path $VenvDir -Force -ErrorAction SilentlyContinue | Out-Null
-        & uv venv --python 3.11 --allow-existing $VenvDir -q 2>$null
-        if ($LASTEXITCODE -ne 0) { & uv venv --allow-existing $VenvDir -q }
-        Write-Msg "Installing Python dependencies..."
-        & uv pip install --python $VenvPython --native-tls `
-            -e (Join-Path $ScriptDir "databricks-tools-core") `
-            -e (Join-Path $ScriptDir "databricks-mcp-server") --quiet
-        & $VenvPython -c "import databricks_mcp_server" 2>$null
-        if ($LASTEXITCODE -ne 0) { Write-Die "MCP server import failed after install." }
-        Write-Ok "MCP server ready  ->  $VenvDir"
-    }
+    if ($LASTEXITCODE -ne 0) { Write-Die "MCP server import failed after install." }
+    Write-Ok "MCP server ready  ->  $VenvDir"
 }
 
-# ── Write .mcp.json with Databricks entry ─────────────────────────────────────
+# -- Write .mcp.json with Databricks entry ------------------------------------
 $mcpJson = if (Test-Path $McpConfig) {
     try { Get-Content $McpConfig -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
 } else { [PSCustomObject]@{} }
@@ -457,26 +564,33 @@ $mcpJson = if (Test-Path $McpConfig) {
 if (-not $mcpJson.PSObject.Properties['mcpServers']) {
     $mcpJson | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue ([PSCustomObject]@{})
 }
+
+$dbEnv = [PSCustomObject]@{ DATABRICKS_CONFIG_PROFILE = $script:Profile_ }
+if ($env:NODE_EXTRA_CA_CERTS) {
+    $dbEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS
+}
+
 $mcpJson.mcpServers | Add-Member -NotePropertyName 'databricks' -NotePropertyValue ([PSCustomObject]@{
     command       = $VenvPython
     args          = @($McpEntry)
     defer_loading = $true
-    env           = [PSCustomObject]@{ DATABRICKS_CONFIG_PROFILE = $script:Profile_ }
+    env           = $dbEnv
 }) -Force
 
 $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
 Write-Ok "Databricks MCP  ->  $McpConfig"
 
 # =============================================================================
-# ── STEP 6: GITHUB MCP ───────────────────────────────────────────────────────
+# -- STEP 6: GITHUB MCP -------------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 6 of 9 — GitHub MCP"
 
-# ── Add GitHub entry to .mcp.json ─────────────────────────────────────────────
+# -- Add GitHub entry to .mcp.json --------------------------------------------
 $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
 $githubEnv = [PSCustomObject]@{ GITHUB_PERSONAL_ACCESS_TOKEN = "" }
 if ($GitHubApiUrl) { $githubEnv | Add-Member -NotePropertyName 'GITHUB_API_URL' -NotePropertyValue $GitHubApiUrl }
+if ($env:NODE_EXTRA_CA_CERTS) { $githubEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS }
 $mcpJson.mcpServers | Add-Member -NotePropertyName 'github' -NotePropertyValue ([PSCustomObject]@{
     command = "npx"
     args    = @("-y", "@modelcontextprotocol/server-github")
@@ -484,18 +598,22 @@ $mcpJson.mcpServers | Add-Member -NotePropertyName 'github' -NotePropertyValue (
 }) -Force
 $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
 
-# ── OAuth via gh CLI ──────────────────────────────────────────────────────────
+# -- OAuth via gh CLI ---------------------------------------------------------
 Write-Msg "Authenticating GitHub MCP via OAuth..."
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    $ghUser = & gh api user --jq '.login' 2>$null
+    try { $ghUser = & gh api user --jq '.login' 2>$null } catch { $ghUser = "" }
     if ($ghUser) {
         Write-Ok "GitHub: already authenticated as $ghUser"
     } else {
         Write-Msg "Opening browser for GitHub OAuth login..."
-        & gh auth login --web --git-protocol ssh
-        $ghUser = & gh api user --jq '.login' 2>$null
+        # Run login; ignore non-zero exit from "key already in use" - auth may still succeed
+        try { & gh auth login --web --git-protocol ssh 2>&1 | Out-Null } catch {}
+        try { $ghUser = & gh api user --jq '.login' 2>$null } catch { $ghUser = "" }
+        if (-not $ghUser) {
+            Write-Warn "GitHub auth could not be confirmed — token may still work"
+        }
     }
-    $ghToken = & gh auth token 2>$null
+    try { $ghToken = & gh auth token 2>$null } catch { $ghToken = "" }
     if ($ghToken) {
         $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
         $mcpJson.mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN = $ghToken
@@ -510,21 +628,27 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
 }
 
 # =============================================================================
-# ── STEP 7: ATLASSIAN MCP ────────────────────────────────────────────────────
+# -- STEP 7: ATLASSIAN MCP ----------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 7 of 9 — Atlassian MCP"
 
-# ── Add Atlassian entry to .mcp.json ──────────────────────────────────────────
+# -- Add Atlassian entry to .mcp.json -----------------------------------------
 $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
-$mcpJson.mcpServers | Add-Member -NotePropertyName 'atlassian' -NotePropertyValue ([PSCustomObject]@{
+$atlassianEntry = [PSCustomObject]@{
     command = "npx"
     args    = @("mcp-remote", "https://mcp.atlassian.com/v1/mcp", "--transport", "http-first")
-}) -Force
+}
+if ($env:NODE_EXTRA_CA_CERTS) {
+    $atlassianEntry | Add-Member -NotePropertyName 'env' -NotePropertyValue ([PSCustomObject]@{
+        NODE_EXTRA_CA_CERTS = $env:NODE_EXTRA_CA_CERTS
+    })
+}
+$mcpJson.mcpServers | Add-Member -NotePropertyName 'atlassian' -NotePropertyValue $atlassianEntry -Force
 $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
 Write-Ok "Atlassian MCP entry added  ->  $McpConfig"
 
-# ── OAuth via mcp-remote (browser) ───────────────────────────────────────────
+# -- OAuth via mcp-remote (browser) -------------------------------------------
 Write-Msg "Authenticating Atlassian MCP (Confluence + Jira) via OAuth..."
 if (Get-Command npx -ErrorAction SilentlyContinue) {
     $doAtlassian = Read-Prompt "Authenticate with Atlassian now? (y/n)" "y"
@@ -550,12 +674,12 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
 }
 
 # =============================================================================
-# ── STEP 8: SKILLS + SETTINGS ────────────────────────────────────────────────
+# -- STEP 8: SKILLS + SETTINGS ------------------------------------------------
 # =============================================================================
 
 Write-Step "Step 8 of 9 — Skills + Settings"
 
-# ── Write .claude/settings.json ───────────────────────────────────────────────
+# -- Write .claude/settings.json ----------------------------------------------
 $settingsPath = Join-Path $script:ProjectDir ".claude\settings.json"
 New-Item -ItemType Directory -Path (Split-Path $settingsPath) -Force -ErrorAction SilentlyContinue | Out-Null
 $settingsJson = if (Test-Path $settingsPath) {
@@ -579,15 +703,16 @@ if (-not $hasUpdateHook) {
 $settingsJson | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding UTF8
 Write-Ok ".claude/settings.json  ->  $settingsPath"
 
-# ── Install skills ─────────────────────────────────────────────────────────────
+# -- Install skills -----------------------------------------------------------
+$dbCount  = 0
+$entCount = 0
 if ($script:InstallSkills) {
     Write-Host ""
     Write-Msg "Installing skills..."
     $skillsDest = Join-Path $script:ProjectDir ".claude\skills"
     New-Item -ItemType Directory -Path $skillsDest -Force -ErrorAction SilentlyContinue | Out-Null
 
-    # Databricks skills — from this repo
-    $dbCount = 0
+    # Databricks skills - from this repo
     $dbSkillsDir = Join-Path $ScriptDir "databricks-skills"
     if (Test-Path $dbSkillsDir) {
         Get-ChildItem -Path $dbSkillsDir -Directory | Where-Object { $_.Name -ne "TEMPLATE" } | ForEach-Object {
@@ -597,8 +722,7 @@ if ($script:InstallSkills) {
     }
     Write-Ok "Databricks skills  ($dbCount installed)"
 
-    # Enterprise skills — git repo or local path, controlled by EnterpriseSkillsMode
-    $entCount  = 0
+    # Enterprise skills - git repo or local path, controlled by EnterpriseSkillsMode
     $entSource = ""
 
     if ($EnterpriseSkillsMode -eq "git") {
@@ -649,12 +773,12 @@ if ($script:InstallSkills) {
 }
 
 # =============================================================================
-# ── STEP 9: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
+# -- STEP 9: WORKSPACE + VERSION LOCK -----------------------------------------
 # =============================================================================
 
 Write-Step "Step 9 of 9 — Workspace + Version Lock"
 
-# ── .gitignore ────────────────────────────────────────────────────────────────
+# -- .gitignore ---------------------------------------------------------------
 $gitignore = Join-Path $script:ProjectDir ".gitignore"
 if (-not (Test-Path $gitignore)) { New-Item -ItemType File -Path $gitignore -Force | Out-Null }
 $giContent = Get-Content $gitignore -ErrorAction SilentlyContinue
@@ -663,7 +787,7 @@ foreach ($rule in @("$StateSubdir/", ".claude/", ".mcp.json", "src/generated/", 
 }
 Write-Ok ".gitignore updated"
 
-# ── src/generated/README.md ───────────────────────────────────────────────────
+# -- src/generated/README.md --------------------------------------------------
 $genReadme = Join-Path $script:ProjectDir "src\generated\README.md"
 if (-not (Test-Path $genReadme)) {
     @"
@@ -677,7 +801,7 @@ All AI-generated code is placed here automatically.
 }
 Write-Ok "src/generated/README.md"
 
-# ── instruction-templates/default.md ─────────────────────────────────────────
+# -- instruction-templates/default.md -----------------------------------------
 $tmpl = Join-Path $script:ProjectDir "instruction-templates\default.md"
 if (-not (Test-Path $tmpl)) {
     @"
@@ -706,7 +830,7 @@ Workspace:  $($script:WorkspaceUrl)
 }
 Write-Ok "instruction-templates/default.md"
 
-# ── metadata.json + version.lock ─────────────────────────────────────────────
+# -- metadata.json + version.lock ---------------------------------------------
 $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 New-Item -ItemType Directory -Path $StateDirPath -Force -ErrorAction SilentlyContinue | Out-Null
 
@@ -744,7 +868,7 @@ Write-Ok "$StateSubdir/metadata.json"
 Write-Ok "$StateSubdir/version.lock"
 
 # =============================================================================
-# ── SUMMARY ───────────────────────────────────────────────────────────────────
+# -- SUMMARY ------------------------------------------------------------------
 # =============================================================================
 
 Write-Host ""
@@ -760,7 +884,7 @@ Write-Host ("  {0,-20} {1}" -f "Databricks skills", "$dbCount installed")
 Write-Host ("  {0,-20} {1}" -f "Enterprise skills", "$entCount installed")
 Write-Host ("  {0,-20} {1}" -f "MCP config",        $McpConfig)
 Write-Host ""
-Write-Host "Next steps:"
+Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Open your project in Claude Code:  claude $($script:ProjectDir)" -ForegroundColor Cyan
 Write-Host "  2. MCP + skills are active — try: `"List my SQL warehouses`""
 Write-Host ""
