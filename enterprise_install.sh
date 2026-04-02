@@ -484,6 +484,28 @@ if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; th
             local add_err
             if add_err=$(gh ssh-key add "${mccain_key}.pub" --title "$host_label" 2>&1); then
                 ok "McCain SSH key registered on GitHub ($host_label)"
+
+                # Open GitHub SSH keys page so user can authorize the key for SAML SSO
+                # (required if McCainFoods enforces SSO — cannot be automated via API)
+                echo ""
+                warn "ACTION REQUIRED — SAML SSO authorization"
+                msg "  Opening your GitHub SSH keys page in the browser..."
+                if command -v open >/dev/null 2>&1; then
+                    open "https://github.com/settings/keys" 2>/dev/null || true
+                elif command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "https://github.com/settings/keys" 2>/dev/null || true
+                else
+                    msg "  Could not open browser automatically."
+                fi
+                msg ""
+                msg "  In the browser:"
+                msg "    1. Find key:  \"$host_label\""
+                msg "    2. Click:     Configure SSO"
+                msg "    3. Click:     Authorize \"${ENTERPRISE_ORG}\""
+                msg ""
+                msg "  Skip this step only if ${ENTERPRISE_ORG} does not enforce SAML SSO."
+                echo ""
+                prompt "Press Enter once you have authorized the key (or to skip if SSO is not required)" "" > /dev/null
             else
                 warn "Could not register key: $add_err"
             fi

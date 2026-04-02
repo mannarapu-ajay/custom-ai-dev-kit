@@ -413,6 +413,22 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             $addErr = (& gh ssh-key add $mccainKeyPub --title $hostLabel 2>&1) | Out-String
             if ($LASTEXITCODE -eq 0) {
                 Write-Ok "McCain SSH key registered on GitHub ($hostLabel)"
+
+                # Open GitHub SSH keys page so user can authorize the key for SAML SSO
+                # (required if McCainFoods enforces SSO — cannot be automated via API)
+                Write-Host ""
+                Write-Warn "ACTION REQUIRED — SAML SSO authorization"
+                Write-Msg  "  Opening your GitHub SSH keys page in the browser..."
+                try { Start-Process "https://github.com/settings/keys" } catch {}
+                Write-Msg  ""
+                Write-Msg  "  In the browser:"
+                Write-Msg  "    1. Find key:  `"$hostLabel`""
+                Write-Msg  "    2. Click:     Configure SSO"
+                Write-Msg  "    3. Click:     Authorize `"$EnterpriseOrg`""
+                Write-Msg  ""
+                Write-Msg  "  Skip this step only if $EnterpriseOrg does not enforce SAML SSO."
+                Write-Host ""
+                Read-Prompt "Press Enter once you have authorized the key (or to skip if SSO is not required)" "" | Out-Null
             } else {
                 Write-Warn "Could not register key: $($addErr.Trim())"
             }
