@@ -81,6 +81,22 @@ WORKSPACE_URLS=(
 # Script's own directory is always the repo root (cloned fork).
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Early sanity check — confirm this is the correct repo directory
+if [ ! -d "$REPO_DIR/databricks-mcp-server" ] || [ ! -d "$REPO_DIR/databricks-tools-core" ]; then
+    echo ""
+    echo "  ✗ Could not locate the custom-ai-dev-kit repo at: $REPO_DIR" >&2
+    echo "" >&2
+    echo "  Do NOT copy this script — run it directly using its full path from any directory:" >&2
+    echo "" >&2
+    echo "    bash /path/to/custom-ai-dev-kit/enterprise_install.sh" >&2
+    echo "" >&2
+    echo "  You can run this from inside your project directory, e.g.:" >&2
+    echo "    cd ~/my-project" >&2
+    echo "    bash /path/to/custom-ai-dev-kit/enterprise_install.sh" >&2
+    echo "" >&2
+    exit 1
+fi
+
 INSTALL_DIR="${AIDEVKIT_HOME:-$HOME/.ai-dev-kit}"
 VENV_DIR="$INSTALL_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
@@ -285,6 +301,9 @@ printf "${CY}╔═════════════════════�
 printf "${CY}║${N}   ${B}${ENTERPRISE_DISPLAY} — Enterprise AI Dev Kit Installer${N}${CY}         ║${N}\n"
 printf "${CY}╚════════════════════════════════════════════════════════╝${N}\n"
 echo ""
+warn "NOTE: Do NOT run the official Databricks install.sh alongside this script."
+msg "  This enterprise installer fully replaces it. Running both will break the MCP config."
+echo ""
 
 # =============================================================================
 # ── STEP 1: PROJECT DIRECTORY ─────────────────────────────────────────────────
@@ -320,19 +339,106 @@ ok "Workspace directories created"
 
 step "Step 2 of 9 — Prerequisites"
 
-# git
-command -v git >/dev/null 2>&1 || die "git required.  Install: https://git-scm.com"
-ok "git"
-
-# npx (needed for Atlassian MCP and GitHub MCP)
-if command -v npx >/dev/null 2>&1; then
-    ok "npx ($(node --version 2>/dev/null || echo 'node version unknown'))"
+# ── git ───────────────────────────────────────────────────────────────────────
+if command -v git >/dev/null 2>&1; then
+    ok "git $(git --version | awk '{print $3}')"
 else
-    warn "npx not found — required for Atlassian MCP (Confluence + Jira) and GitHub MCP"
-    msg "  Install Node.js: https://nodejs.org  or  brew install node"
+    # On macOS, invoking git may trigger Xcode CLI install prompt — try it
+    if [ "$(uname)" = "Darwin" ]; then
+        warn "git not found — attempting Xcode CLI install…"
+        xcode-select --install 2>/dev/null || true
+        sleep 5
+    fi
+    command -v git >/dev/null 2>&1 || die "git required. Install: https://git-scm.com"
+    ok "git $(git --version | awk '{print $3}') (just installed)"
 fi
 
-# SSH access to GitHub (needed only when pulling enterprise skills from a remote git repo)
+# ── Node.js / npx (needed for GitHub MCP + Atlassian MCP) ────────────────────
+if command -v npx >/dev/null 2>&1; then
+    ok "Node.js $(node --version 2>/dev/null || echo '?') / npx"
+else
+    warn "Node.js not found — installing…"
+    if command -v brew >/dev/null 2>&1; then
+        brew install node --quiet \
+            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
+            || warn "brew install node failed — install manually: https://nodejs.org"
+    elif command -v apt-get >/dev/null 2>&1; then
+        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - 2>/dev/null \
+            && sudo apt-get install -y nodejs 2>/dev/null \
+            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
+            || warn "apt install node failed — install manually: https://nodejs.org"
+    elif command -v yum >/dev/null 2>&1; then
+        curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash - 2>/dev/null \
+            && sudo yum install -y nodejs 2>/dev/null \
+            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
+            || warn "yum install node failed — install manually: https://nodejs.org"
+    else
+        warn "No package manager found — install Node.js manually: https://nodejs.org"
+    fi
+fi
+
+# ── uv (Python package manager for MCP server) ────────────────────────────────
+if command -v uv >/dev/null 2>&1; then
+    ok "$(uv --version)"
+else
+    warn "uv not found — installing…"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv >/dev/null 2>&1 || die "uv install failed. Run: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    ok "$(uv --version) (just installed)"
+fi
+
+# ── Databricks CLI ────────────────────────────────────────────────────────────
+if command -v databricks >/dev/null 2>&1; then
+    ok "Databricks CLI: $(databricks --version 2>&1 | head -1)"
+else
+    warn "Databricks CLI not found — installing…"
+    if command -v brew >/dev/null 2>&1; then
+        brew tap databricks/tap 2>/dev/null || true
+        brew install databricks --quiet \
+            && ok "Databricks CLI: $(databricks --version 2>&1 | head -1) (just installed)" \
+            || { warn "brew install failed — trying curl installer…"
+                 curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                 command -v databricks >/dev/null 2>&1 \
+                     && ok "Databricks CLI installed" \
+                     || warn "Databricks CLI install failed — install manually and re-run"; }
+    else
+        curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+        command -v databricks >/dev/null 2>&1 \
+            && ok "Databricks CLI installed" \
+            || warn "Databricks CLI install failed — install manually and re-run"
+    fi
+fi
+
+# ── gh CLI (needed for GitHub MCP OAuth) ──────────────────────────────────────
+if command -v gh >/dev/null 2>&1; then
+    ok "gh CLI: $(gh --version 2>&1 | head -1)"
+else
+    warn "gh CLI not found — installing…"
+    if command -v brew >/dev/null 2>&1; then
+        brew install gh --quiet \
+            && ok "gh CLI: $(gh --version 2>&1 | head -1) (just installed)" \
+            || warn "brew install gh failed — install manually: https://cli.github.com"
+    elif command -v apt-get >/dev/null 2>&1; then
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null \
+            && sudo apt-get update -qq && sudo apt-get install -y gh 2>/dev/null \
+            && ok "gh CLI: $(gh --version 2>&1 | head -1) (just installed)" \
+            || warn "apt install gh failed — install manually: https://cli.github.com"
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y 'dnf-command(config-manager)' 2>/dev/null || true
+        sudo yum config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo 2>/dev/null \
+            && sudo yum install -y gh 2>/dev/null \
+            && ok "gh CLI: $(gh --version 2>&1 | head -1) (just installed)" \
+            || warn "yum install gh failed — install manually: https://cli.github.com"
+    else
+        warn "No package manager found — install gh manually: https://cli.github.com"
+    fi
+fi
+
+# ── SSH access to GitHub (needed for private enterprise skills repo) ──────────
 if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; then
     ssh_out=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 || true)
     if echo "$ssh_out" | grep -q "Hi "; then
@@ -341,26 +447,6 @@ if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; th
         warn "SSH access to github.com not verified — private skills repo clone may fail"
         msg "  Configure SSH: ssh-keygen -t ed25519 && add public key to GitHub"
     fi
-fi
-
-# uv
-if command -v uv >/dev/null 2>&1; then
-    ok "$(uv --version)"
-else
-    warn "uv not found — installing…"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-    command -v uv >/dev/null 2>&1 || die "uv install failed.  Run: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    ok "$(uv --version) (just installed)"
-fi
-
-# Databricks CLI
-if command -v databricks >/dev/null 2>&1; then
-    ok "Databricks CLI: $(databricks --version 2>&1 | head -1)"
-else
-    warn "Databricks CLI not found.  Install:"
-    msg "  curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh"
-    msg "  You can continue, but authentication will require the CLI later."
 fi
 
 # =============================================================================
@@ -465,7 +551,8 @@ fi
 CA_BUNDLE="$HOME/.${ENTERPRISE_NAME}-adk/ca-bundle.pem"
 
 if [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f "$NODE_EXTRA_CA_CERTS" ]; then
-    : # already configured — skip silently
+    # already configured — ensure npm also has it
+    command -v npm >/dev/null 2>&1 && npm config set cafile "$NODE_EXTRA_CA_CERTS" 2>/dev/null || true
 else
     echo ""
     msg "Configuring corporate CA certificates…"
@@ -489,6 +576,8 @@ else
 
     if [ "$CERT_OK" = true ]; then
         export NODE_EXTRA_CA_CERTS="$CA_BUNDLE"
+        # Configure npm to use the same CA bundle (fixes npx/mcp-remote SSL errors)
+        command -v npm >/dev/null 2>&1 && npm config set cafile "$CA_BUNDLE" 2>/dev/null || true
         # Persist to shell profile
         SHELL_PROFILE=""
         case "${SHELL:-}" in
@@ -516,21 +605,17 @@ if [ "$INSTALL_MCP" = true ]; then
     msg "Setting up Databricks MCP server…"
     [ -d "$REPO_DIR/databricks-mcp-server" ] || die "databricks-mcp-server not found in $REPO_DIR"
 
-    if "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null; then
-        [ "$FORCE" = true ] && msg "Force reinstall…" || { ok "MCP server already set up — skipping"; }
-    fi
-
-    if ! "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null || [ "$FORCE" = true ]; then
-        mkdir -p "$VENV_DIR"
-        uv venv --python 3.11 --allow-existing "$VENV_DIR" -q 2>/dev/null || uv venv --allow-existing "$VENV_DIR" -q
-        msg "Installing Python dependencies…"
-        # --native-tls: use system certificate store (required behind corporate TLS-intercepting proxies)
-        uv pip install --python "$VENV_PYTHON" --native-tls \
-            -e "$REPO_DIR/databricks-tools-core" \
-            -e "$REPO_DIR/databricks-mcp-server" --quiet
-        "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null || die "MCP server import failed after install."
-        ok "MCP server ready  →  $VENV_DIR"
-    fi
+    # Always reinstall from this repo — ensures venv uses custom-ai-dev-kit packages,
+    # not stale ones from a previous official install.sh run.
+    mkdir -p "$VENV_DIR"
+    uv venv --python 3.11 --allow-existing "$VENV_DIR" -q 2>/dev/null || uv venv --allow-existing "$VENV_DIR" -q
+    msg "Installing Python dependencies…"
+    # --native-tls: use system certificate store (required behind corporate TLS-intercepting proxies)
+    uv pip install --python "$VENV_PYTHON" --native-tls \
+        -e "$REPO_DIR/databricks-tools-core" \
+        -e "$REPO_DIR/databricks-mcp-server" --quiet
+    "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null || die "MCP server import failed after install."
+    ok "MCP server ready  →  $VENV_DIR"
 fi
 
 # ── Write .mcp.json with Databricks entry ─────────────────────────────────────
@@ -542,11 +627,14 @@ existing = {}
 if path.exists():
     try: existing = json.loads(path.read_text())
     except: pass
+ca = '${NODE_EXTRA_CA_CERTS:-}'
+env = {'DATABRICKS_CONFIG_PROFILE': '$PROFILE'}
+if ca: env['NODE_EXTRA_CA_CERTS'] = ca
 existing.setdefault('mcpServers', {})['databricks'] = {
     'command': '$VENV_PYTHON',
     'args':    ['$MCP_ENTRY'],
     'defer_loading': True,
-    'env': {'DATABRICKS_CONFIG_PROFILE': '$PROFILE'}
+    'env': env
 }
 path.write_text(json.dumps(existing, indent=2) + '\n')
 "
@@ -563,9 +651,11 @@ python3 -c "
 import json, pathlib
 path = pathlib.Path('$MCP_CONFIG')
 data = json.loads(path.read_text())
+ca = '${NODE_EXTRA_CA_CERTS:-}'
 github_env = {'GITHUB_PERSONAL_ACCESS_TOKEN': ''}
 if '$GITHUB_API_URL':
     github_env['GITHUB_API_URL'] = '$GITHUB_API_URL'
+if ca: github_env['NODE_EXTRA_CA_CERTS'] = ca
 data['mcpServers']['github'] = {
     'command': 'npx',
     'args':    ['-y', '@modelcontextprotocol/server-github'],
@@ -582,8 +672,12 @@ if command -v gh >/dev/null 2>&1; then
         ok "GitHub: already authenticated as $GH_USER"
     else
         msg "Opening browser for GitHub OAuth login…"
-        gh auth login --web --git-protocol ssh
+        # Run login; ignore non-zero exit from "key already in use" — auth may still succeed
+        gh auth login --web --git-protocol ssh 2>&1 || true
         GH_USER=$(gh api user --jq '.login' 2>/dev/null || true)
+        if [ -z "$GH_USER" ]; then
+            warn "GitHub auth could not be confirmed — token may still work"
+        fi
     fi
     GITHUB_TOKEN=$(gh auth token 2>/dev/null || true)
     if [ -n "$GITHUB_TOKEN" ]; then
@@ -599,8 +693,7 @@ path.write_text(json.dumps(data, indent=2) + '\n')
         warn "Could not retrieve GitHub token — edit GITHUB_PERSONAL_ACCESS_TOKEN in .mcp.json manually"
     fi
 else
-    warn "gh CLI not found — install it for OAuth: https://cli.github.com"
-    warn "Or set GITHUB_PERSONAL_ACCESS_TOKEN manually in .mcp.json"
+    warn "gh CLI unavailable — set GITHUB_PERSONAL_ACCESS_TOKEN manually in .mcp.json"
 fi
 
 # =============================================================================
@@ -614,10 +707,13 @@ python3 -c "
 import json, pathlib
 path = pathlib.Path('$MCP_CONFIG')
 data = json.loads(path.read_text())
-data['mcpServers']['atlassian'] = {
+ca = '${NODE_EXTRA_CA_CERTS:-}'
+atlassian_entry = {
     'command': 'npx',
     'args':    ['mcp-remote', 'https://mcp.atlassian.com/v1/mcp', '--transport', 'http-first']
 }
+if ca: atlassian_entry['env'] = {'NODE_EXTRA_CA_CERTS': ca}
+data['mcpServers']['atlassian'] = atlassian_entry
 path.write_text(json.dumps(data, indent=2) + '\n')
 "
 ok "Atlassian MCP entry added  →  $MCP_CONFIG"
@@ -630,7 +726,7 @@ if command -v npx >/dev/null 2>&1; then
         msg "Starting OAuth flow — a browser window will open."
         msg "Sign in with your Atlassian account, then press Enter here to continue."
         echo ""
-        npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first &
+        NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}" npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first &
         ATLASSIAN_PID=$!
         sleep 4
         prompt "Press Enter after completing Atlassian authentication in the browser" ""
