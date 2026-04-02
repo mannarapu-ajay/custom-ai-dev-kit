@@ -108,6 +108,8 @@ $script:Silent          = $false
 $script:ProfileProvided = $false
 $script:ProjectDir      = ""
 $script:WorkspaceUrl    = ""
+$script:SkillsAuthMode  = "ssh"   # overridden in Step 2 if SSH is not set up
+$script:HttpsSkillsRepo = $EnterpriseSkillsRepo -replace '^git@github\.com:', 'https://github.com/'
 
 # =============================================================================
 # -- PARSE FLAGS --------------------------------------------------------------
@@ -367,9 +369,73 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
     try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
     if ($sshOut -match "Hi ") {
         Write-Ok "SSH access to github.com"
+        $script:SkillsAuthMode = "ssh"
     } else {
-        Write-Warn "SSH access to github.com not verified — private skills repo clone may fail"
-        Write-Msg  "  Configure SSH: ssh-keygen -t ed25519 and add public key to GitHub"
+        Write-Warn "SSH access to github.com not verified"
+        Write-Host ""
+        $doSetup = Read-Prompt "Authenticate with GitHub to set up SSH keys automatically? (y/n)" "y"
+        if ($doSetup -in @("y","Y")) {
+
+            # Generate SSH key pair if none exists
+            $sshKeyFile = Join-Path $env:USERPROFILE ".ssh\id_ed25519"
+            if (-not (Test-Path "$sshKeyFile") -and -not (Test-Path (Join-Path $env:USERPROFILE ".ssh\id_rsa"))) {
+                Write-Msg "Generating SSH key pair..."
+                $gitEmail = & git config --global user.email 2>$null
+                $keyComment = if ($gitEmail) { $gitEmail } else { "$env:USERNAME@$env:COMPUTERNAME" }
+                New-Item -ItemType Directory -Path (Join-Path $env:USERPROFILE ".ssh") -Force -ErrorAction SilentlyContinue | Out-Null
+                & ssh-keygen -t ed25519 -C $keyComment -f $sshKeyFile -N '""'
+                # Start ssh-agent and add key
+                try {
+                    Start-Service ssh-agent -ErrorAction SilentlyContinue
+                    & ssh-add $sshKeyFile 2>$null
+                } catch {}
+                Write-Ok "SSH key pair generated"
+            }
+
+            # Find the public key file
+            $pubKeyFile = ""
+            foreach ($f in @("$sshKeyFile.pub", (Join-Path $env:USERPROFILE ".ssh\id_rsa.pub"), (Join-Path $env:USERPROFILE ".ssh\id_ecdsa.pub"))) {
+                if (Test-Path $f) { $pubKeyFile = $f; break }
+            }
+
+            if ($pubKeyFile) {
+                # Authenticate gh CLI via web OAuth (browser popup)
+                Write-Msg "Opening browser for GitHub authentication..."
+                try { & gh auth login --web --git-protocol ssh } catch {}
+
+                # Add SSH public key to GitHub automatically via API
+                $hostLabel = "Enterprise ADK - $env:COMPUTERNAME"
+                Write-Msg "Registering SSH public key on GitHub..."
+                try {
+                    & gh ssh-key add $pubKeyFile --title $hostLabel 2>$null
+                    Write-Ok "SSH public key registered on GitHub ($hostLabel)"
+                } catch {
+                    Write-Warn "Key may already be registered — continuing"
+                }
+
+                # Configure git HTTPS credential helper as fallback
+                try { & gh auth setup-git 2>$null } catch {}
+
+                # Re-test SSH
+                Write-Host ""
+                Write-Msg "Re-testing SSH access..."
+                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
+                if ($sshOut -match "Hi ") {
+                    Write-Ok "SSH access to github.com verified"
+                    $script:SkillsAuthMode = "ssh"
+                } else {
+                    Write-Warn "SSH not verified yet — will use HTTPS with gh credentials"
+                    $script:SkillsAuthMode = "https"
+                }
+            } else {
+                Write-Warn "No SSH key found after setup — falling back to HTTPS"
+                $script:SkillsAuthMode = "https"
+            }
+        } else {
+            Write-Msg "Skipped — enterprise skills will not be installed"
+            Write-Msg "Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after setting up GitHub authentication"
+            $script:SkillsAuthMode = "skip"
+        }
     }
 }
 
@@ -725,25 +791,56 @@ if ($script:InstallSkills) {
     # Enterprise skills - git repo or local path, controlled by EnterpriseSkillsMode
     $entSource = ""
 
+    # Helper: interpret git clone/fetch error and print an actionable message
+    function Invoke-SkillsCloneError {
+        param([string]$Err)
+        if ($Err -match "repository not found|permission to .+ denied|403|access denied") {
+            Write-Warn "Access denied to enterprise skills repo"
+            Write-Msg  "  Your GitHub account does not have access to: $EnterpriseSkillsRepo"
+            Write-Msg  "  Please ask your administrator to grant you access, then re-run:"
+            Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+        } elseif ($Err -match "permission denied.*publickey|could not read username|authentication failed") {
+            Write-Warn "Authentication failed when cloning enterprise skills repo"
+            Write-Msg  "  Re-run the installer to set up GitHub authentication again, or:"
+            Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+        } else {
+            Write-Warn "Failed to clone enterprise skills repo"
+            if ($Err) { Write-Msg "  Error: $Err" }
+            Write-Msg  "  Re-run with -SkillsOnly after resolving the issue"
+        }
+    }
+
     if ($EnterpriseSkillsMode -eq "git") {
         if (-not $EnterpriseSkillsRepo) {
             Write-Warn "EnterpriseSkillsMode=git but EnterpriseSkillsRepo is empty — skipping"
-        } elseif (Test-Path (Join-Path $EntSkillsRepoDir ".git")) {
-            $currentRemote = & git -C $EntSkillsRepoDir remote get-url origin 2>$null
-            if ($currentRemote -ne $EnterpriseSkillsRepo) {
-                Write-Msg "Enterprise skills repo URL changed — re-cloning..."
-                Remove-Item -Path $EntSkillsRepoDir -Recurse -Force
-                try { & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>&1 | Out-Null } catch {}
-                if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to re-clone enterprise skills repo" }
-            } else {
-                try { & git -C $EntSkillsRepoDir fetch -q --depth 1 origin main 2>&1 | Out-Null } catch {}
-                try { & git -C $EntSkillsRepoDir reset --hard FETCH_HEAD 2>&1 | Out-Null } catch {}
-                if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to update enterprise skills repo" }
-            }
+        } elseif ($script:SkillsAuthMode -eq "skip") {
+            Write-Warn "Enterprise skills skipped — GitHub authentication not set up"
+            Write-Msg  "  Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after setting up authentication"
         } else {
-            New-Item -ItemType Directory -Path $InstallDir -Force -ErrorAction SilentlyContinue | Out-Null
-            try { & git clone -q --depth 1 $EnterpriseSkillsRepo $EntSkillsRepoDir 2>&1 | Out-Null } catch {}
-            if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to clone enterprise skills repo ($EnterpriseSkillsRepo)" }
+            # Pick clone URL based on auth mode set in Step 2
+            $skillsCloneUrl = if ($script:SkillsAuthMode -eq "https") { $script:HttpsSkillsRepo } else { $EnterpriseSkillsRepo }
+
+            if (Test-Path (Join-Path $EntSkillsRepoDir ".git")) {
+                $currentRemote = & git -C $EntSkillsRepoDir remote get-url origin 2>$null
+                if ($currentRemote -ne $skillsCloneUrl) {
+                    Write-Msg "Enterprise skills repo URL changed — re-cloning..."
+                    Remove-Item -Path $EntSkillsRepoDir -Recurse -Force
+                    $cloneErr = (& git clone -q --depth 1 $skillsCloneUrl $EntSkillsRepoDir 2>&1) | Out-String
+                    if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Invoke-SkillsCloneError $cloneErr }
+                } else {
+                    $fetchErr = (& git -C $EntSkillsRepoDir fetch -q --depth 1 origin main 2>&1) | Out-String
+                    if ($LASTEXITCODE -ne 0) {
+                        Invoke-SkillsCloneError $fetchErr
+                    } else {
+                        try { & git -C $EntSkillsRepoDir reset --hard FETCH_HEAD 2>&1 | Out-Null } catch {}
+                        if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to reset enterprise skills repo to latest" }
+                    }
+                }
+            } else {
+                New-Item -ItemType Directory -Path $InstallDir -Force -ErrorAction SilentlyContinue | Out-Null
+                $cloneErr = (& git clone -q --depth 1 $skillsCloneUrl $EntSkillsRepoDir 2>&1) | Out-String
+                if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Invoke-SkillsCloneError $cloneErr }
+            }
         }
     } else {
         $localPath = if ($EnterpriseSkillsPath) { $EnterpriseSkillsPath } else { $EntSkillsLocal }

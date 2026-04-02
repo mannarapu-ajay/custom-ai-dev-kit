@@ -125,6 +125,7 @@ PROFILE_PROVIDED=false
 
 PROJECT_DIR=""
 WORKSPACE_URL=""
+SKILLS_AUTH_MODE="ssh"   # overridden in Step 2 if SSH is not set up
 
 # =============================================================================
 # ── PARSE FLAGS ───────────────────────────────────────────────────────────────
@@ -440,12 +441,74 @@ fi
 
 # ── SSH access to GitHub (needed for private enterprise skills repo) ──────────
 if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; then
-    ssh_out=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 || true)
+    # Derive HTTPS URL from SSH URL for fallback
+    HTTPS_SKILLS_REPO=$(echo "$ENTERPRISE_SKILLS_REPO" | sed 's|git@github.com:|https://github.com/|')
+
+    _ssh_check() { ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 || true; }
+
+    ssh_out=$(_ssh_check)
     if echo "$ssh_out" | grep -q "Hi "; then
         ok "SSH access to github.com"
+        SKILLS_AUTH_MODE="ssh"
     else
-        warn "SSH access to github.com not verified — private skills repo clone may fail"
-        msg "  Configure SSH: ssh-keygen -t ed25519 && add public key to GitHub"
+        warn "SSH access to github.com not verified"
+        echo ""
+        do_setup=$(prompt "Authenticate with GitHub to set up SSH keys automatically? (y/n)" "y")
+        if [ "$do_setup" = "y" ] || [ "$do_setup" = "Y" ]; then
+
+            # Generate SSH key pair if none exists
+            if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
+                msg "Generating SSH key pair..."
+                git_email=$(git config --global user.email 2>/dev/null || echo "")
+                mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+                ssh-keygen -t ed25519 -C "${git_email:-$(whoami)@$(hostname)}" \
+                    -f "$HOME/.ssh/id_ed25519" -N "" < /dev/tty
+                eval "$(ssh-agent -s)" 2>/dev/null || true
+                ssh-add "$HOME/.ssh/id_ed25519" 2>/dev/null || true
+                ok "SSH key pair generated"
+            fi
+
+            # Find the public key file
+            PUB_KEY_FILE=""
+            for f in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
+                [ -f "$f" ] && PUB_KEY_FILE="$f" && break
+            done
+
+            if [ -n "$PUB_KEY_FILE" ]; then
+                # Authenticate gh CLI via web OAuth (browser popup)
+                msg "Opening browser for GitHub authentication..."
+                gh auth login --web --git-protocol ssh < /dev/tty || true
+
+                # Add SSH public key to GitHub automatically via API
+                HOST_LABEL="Enterprise ADK - $(hostname)"
+                msg "Registering SSH public key on GitHub..."
+                gh ssh-key add "$PUB_KEY_FILE" --title "$HOST_LABEL" 2>/dev/null \
+                    && ok "SSH public key registered on GitHub ($HOST_LABEL)" \
+                    || warn "Key may already be registered — continuing"
+
+                # Configure git HTTPS credential helper as fallback
+                gh auth setup-git 2>/dev/null || true
+
+                # Re-test SSH
+                echo ""
+                msg "Re-testing SSH access..."
+                ssh_out=$(_ssh_check)
+                if echo "$ssh_out" | grep -q "Hi "; then
+                    ok "SSH access to github.com verified"
+                    SKILLS_AUTH_MODE="ssh"
+                else
+                    warn "SSH not verified yet — will use HTTPS with gh credentials"
+                    SKILLS_AUTH_MODE="https"
+                fi
+            else
+                warn "No SSH key found after setup — falling back to HTTPS"
+                SKILLS_AUTH_MODE="https"
+            fi
+        else
+            msg "Skipped — enterprise skills will not be installed"
+            msg "Re-run with:  bash $0 --skills-only  after setting up GitHub authentication"
+            SKILLS_AUTH_MODE="skip"
+        fi
     fi
 fi
 
@@ -789,29 +852,61 @@ if [ "$INSTALL_SKILLS" = true ]; then
     ENT_COUNT=0
     ENT_SOURCE=""
 
+    # Helper: interpret git clone/fetch error and print an actionable message
+    _skills_clone_error() {
+        local err="${1:-}"
+        if echo "$err" | grep -qiE "repository not found|permission to .+ denied|403|access denied"; then
+            warn "Access denied to enterprise skills repo"
+            msg "  Your GitHub account does not have access to: $ENTERPRISE_SKILLS_REPO"
+            msg "  Please ask your administrator to grant you access, then re-run:"
+            msg "    bash $0 --skills-only"
+        elif echo "$err" | grep -qiE "permission denied.*publickey|could not read username|authentication failed"; then
+            warn "Authentication failed when cloning enterprise skills repo"
+            msg "  Re-run the installer to set up GitHub authentication again, or:"
+            msg "    bash $0 --skills-only"
+        else
+            warn "Failed to clone enterprise skills repo"
+            [ -n "$err" ] && msg "  Error: $err"
+            msg "  Re-run with --skills-only after resolving the issue"
+        fi
+    }
+
     if [ "$ENTERPRISE_SKILLS_MODE" = "git" ]; then
         # ── Git mode: clone / update the remote private repo ──────────────────
         if [ -z "$ENTERPRISE_SKILLS_REPO" ]; then
             warn "ENTERPRISE_SKILLS_MODE=git but ENTERPRISE_SKILLS_REPO is empty — skipping"
-        elif [ -d "$ENTERPRISE_SKILLS_REPO_DIR/.git" ]; then
-            current_remote=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" remote get-url origin 2>/dev/null || true)
-            if [ "$current_remote" != "$ENTERPRISE_SKILLS_REPO" ]; then
-                msg "Enterprise skills repo URL changed — re-cloning…"
-                rm -rf "$ENTERPRISE_SKILLS_REPO_DIR"
-                git clone -q --depth 1 "$ENTERPRISE_SKILLS_REPO" "$ENTERPRISE_SKILLS_REPO_DIR" 2>/dev/null \
-                    && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
-                    || warn "Failed to re-clone enterprise skills repo"
-            else
-                git -C "$ENTERPRISE_SKILLS_REPO_DIR" fetch -q --depth 1 origin main 2>/dev/null
-                git -C "$ENTERPRISE_SKILLS_REPO_DIR" reset --hard FETCH_HEAD 2>/dev/null \
-                    && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
-                    || warn "Failed to update enterprise skills repo"
-            fi
+        elif [ "$SKILLS_AUTH_MODE" = "skip" ]; then
+            warn "Enterprise skills skipped — GitHub authentication not set up"
+            msg "  Re-run with:  bash $0 --skills-only  after setting up authentication"
         else
-            mkdir -p "$INSTALL_DIR"
-            git clone -q --depth 1 "$ENTERPRISE_SKILLS_REPO" "$ENTERPRISE_SKILLS_REPO_DIR" 2>/dev/null \
-                && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
-                || warn "Failed to clone enterprise skills repo ($ENTERPRISE_SKILLS_REPO)"
+            # Pick clone URL based on auth mode set in Step 2
+            SKILLS_CLONE_URL="$ENTERPRISE_SKILLS_REPO"
+            [ "$SKILLS_AUTH_MODE" = "https" ] && SKILLS_CLONE_URL="$HTTPS_SKILLS_REPO"
+
+            if [ -d "$ENTERPRISE_SKILLS_REPO_DIR/.git" ]; then
+                current_remote=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" remote get-url origin 2>/dev/null || true)
+                if [ "$current_remote" != "$SKILLS_CLONE_URL" ]; then
+                    msg "Enterprise skills repo URL changed — re-cloning…"
+                    rm -rf "$ENTERPRISE_SKILLS_REPO_DIR"
+                    clone_err=$(git clone -q --depth 1 "$SKILLS_CLONE_URL" "$ENTERPRISE_SKILLS_REPO_DIR" 2>&1) \
+                        && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
+                        || _skills_clone_error "$clone_err"
+                else
+                    fetch_err=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" fetch -q --depth 1 origin main 2>&1)
+                    if [ $? -ne 0 ]; then
+                        _skills_clone_error "$fetch_err"
+                    else
+                        git -C "$ENTERPRISE_SKILLS_REPO_DIR" reset --hard FETCH_HEAD 2>/dev/null \
+                            && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
+                            || warn "Failed to reset enterprise skills repo to latest"
+                    fi
+                fi
+            else
+                mkdir -p "$INSTALL_DIR"
+                clone_err=$(git clone -q --depth 1 "$SKILLS_CLONE_URL" "$ENTERPRISE_SKILLS_REPO_DIR" 2>&1) \
+                    && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
+                    || _skills_clone_error "$clone_err"
+            fi
         fi
     else
         # ── Local mode: use explicit path or default to ./enterprise_skills/ ──
