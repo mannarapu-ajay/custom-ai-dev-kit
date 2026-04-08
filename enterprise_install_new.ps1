@@ -1,4 +1,4 @@
-﻿# hello
+﻿#
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
