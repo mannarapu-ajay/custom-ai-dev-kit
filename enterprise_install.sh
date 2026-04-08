@@ -134,11 +134,11 @@ SKILLS_AUTH_MODE="ssh"   # overridden in Step 2 if SSH is not set up
 
 while [ $# -gt 0 ]; do
     case $1 in
-        -p|--profile)      PROFILE="$2"; PROFILE_PROVIDED=true; shift 2 ;;
+        -p|--profile)      [ -z "${2:-}" ] && { echo "--profile requires a value" >&2; exit 1; }; PROFILE="$2"; PROFILE_PROVIDED=true; shift 2 ;;
         -g|--global)       SCOPE="global"; shift ;;
         --skills-only)     INSTALL_MCP=false; SKILLS_ONLY=true; shift ;;
         --mcp-only)        INSTALL_SKILLS=false; shift ;;
-        --skills-profile)  SKILLS_PROFILE="$2"; shift 2 ;;
+        --skills-profile)  [ -z "${2:-}" ] && { echo "--skills-profile requires a value" >&2; exit 1; }; SKILLS_PROFILE="$2"; shift 2 ;;
         --silent)          SILENT=true; shift ;;
         -f|--force)        FORCE=true; shift ;;
         -h|--help)
@@ -211,7 +211,7 @@ prompt() {
 radio_select() {
     local title="$1"; shift
     local -a labels=() values=() hints=()
-    local count=0 cursor=0 selected=0
+    local count=0 cursor=0
 
     for item in "$@"; do
         IFS='|' read -r label value hint <<< "$item"
@@ -240,8 +240,7 @@ radio_select() {
         local i=0
         for i in $(seq 0 $((count - 1))); do
             local arrow="    " dot="${D}○${N}" hint_style="$D"
-            [ "$i" = "$cursor" ]   && arrow="  ${CY}❯${N} "
-            [ "$i" = "$selected" ] && dot="${G}●${N}" && hint_style="$G"
+            [ "$i" = "$cursor" ] && arrow="  ${CY}❯${N} " && dot="${G}●${N}" && hint_style="$G"
             printf "\033[2K  %b%b%-22s %b%s%b\n" \
                 "$arrow" "$dot " "${labels[$i]}" "$hint_style" "${hints[$i]}" "$N" > /dev/tty
         done
@@ -279,19 +278,15 @@ radio_select() {
                 esac
             fi
         elif [ "$key" = "" ]; then
-            # Enter — select current item (if on an item) and always confirm
-            [ "$cursor" -lt "$count" ] && selected=$cursor
+            # Enter — confirm current cursor position
             _radio_draw; break
-        elif [ "$key" = " " ]; then
-            # Space — highlight without confirming
-            [ "$cursor" -lt "$count" ] && selected=$cursor
         fi
         _radio_draw
     done
 
     printf "\033[?25h" > /dev/tty
     trap - EXIT
-    echo "${values[$selected]}"
+    echo "${values[$cursor]}"
 }
 
 # =============================================================================
@@ -299,9 +294,16 @@ radio_select() {
 # =============================================================================
 
 echo ""
-printf "${CY}╔════════════════════════════════════════════════════════╗${N}\n"
-printf "${CY}║${N}   ${B}${ENTERPRISE_DISPLAY} — Enterprise AI Dev Kit Installer${N}${CY}         ║${N}\n"
-printf "${CY}╚════════════════════════════════════════════════════════╝${N}\n"
+_banner_title="   ${ENTERPRISE_DISPLAY} — Enterprise AI Dev Kit Installer"
+_banner_inner=56
+_title_len=${#_banner_title}
+[ "$_title_len" -gt "$_banner_inner" ] && _banner_inner=$(( _title_len + 2 ))
+_border_top="${CY}╔$(printf '═%.0s' $(seq 1 $_banner_inner))╗${N}"
+_banner_padded="${_banner_title}$(printf ' %.0s' $(seq $(( _banner_inner - _title_len + 1 )) $_banner_inner))"
+_border_bot="${CY}╚$(printf '═%.0s' $(seq 1 $_banner_inner))╝${N}"
+printf "%b\n" "$_border_top"
+printf "${CY}║${N}%b${CY}║${N}\n" "$_banner_padded"
+printf "%b\n" "$_border_bot"
 echo ""
 warn "NOTE: Do NOT run the official Databricks install.sh alongside this script."
 msg "  This enterprise installer fully replaces it. Running both will break the MCP config."
@@ -481,8 +483,9 @@ if [ "$ENTERPRISE_SKILLS_MODE" = "git" ] && [ -n "$ENTERPRISE_SKILLS_REPO" ]; th
         else
             local host_label="Enterprise ADK - $(hostname)"
             msg "Registering McCain SSH key on GitHub..."
-            local add_err
-            if add_err=$(gh ssh-key add "${mccain_key}.pub" --title "$host_label" 2>&1); then
+            local add_err add_exit
+            add_err=$(gh ssh-key add "${mccain_key}.pub" --title "$host_label" 2>&1) && add_exit=0 || add_exit=$?
+            if [ "$add_exit" -eq 0 ] || echo "$add_err" | grep -qi "already exists"; then
                 ok "McCain SSH key registered on GitHub ($host_label)"
 
                 # Open GitHub SSH keys page so user can authorize the key for SAML SSO
@@ -682,6 +685,10 @@ if [ "$PROFILE_PROVIDED" = false ] && [ "$SILENT" = false ]; then
 fi
 
 # ── OAuth login if not already authenticated ──────────────────────────────────
+# Refresh PATH in case Databricks CLI was just installed via curl (goes to ~/.local/bin)
+# and wasn't visible to the current shell session yet
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
+
 echo ""
 if command -v databricks >/dev/null 2>&1; then
     AUTH_USER=$(databricks current-user me --profile "$PROFILE" --output json 2>/dev/null \
@@ -783,11 +790,10 @@ if [ "$INSTALL_MCP" = true ]; then
         -e "$REPO_DIR/databricks-mcp-server" --quiet
     "$VENV_PYTHON" -c "import databricks_mcp_server" 2>/dev/null || die "MCP server import failed after install."
     ok "MCP server ready  →  $VENV_DIR"
-fi
 
-# ── Write .mcp.json with Databricks entry ─────────────────────────────────────
-MCP_CONFIG="$PROJECT_DIR/.mcp.json"
-python3 -c "
+    # ── Write .mcp.json with Databricks entry ─────────────────────────────────────
+    MCP_CONFIG="$PROJECT_DIR/.mcp.json"
+    python3 -c "
 import json, pathlib
 path = pathlib.Path('$MCP_CONFIG')
 existing = {}
@@ -805,7 +811,10 @@ existing.setdefault('mcpServers', {})['databricks'] = {
 }
 path.write_text(json.dumps(existing, indent=2) + '\n')
 "
-ok "Databricks MCP  →  $MCP_CONFIG"
+    ok "Databricks MCP  →  $MCP_CONFIG"
+fi
+
+MCP_CONFIG="$PROJECT_DIR/.mcp.json"
 
 # =============================================================================
 # ── STEP 6: GITHUB MCP ───────────────────────────────────────────────────────
@@ -821,7 +830,7 @@ import json, pathlib
 path = pathlib.Path('$MCP_CONFIG')
 data = json.loads(path.read_text())
 ca = '${NODE_EXTRA_CA_CERTS:-}'
-github_env = {'GITHUB_PERSONAL_ACCESS_TOKEN': ''}
+github_env = {'GITHUB_PERSONAL_ACCESS_TOKEN': None}
 if '$GITHUB_API_URL':
     github_env['GITHUB_API_URL'] = '$GITHUB_API_URL'
 if ca: github_env['NODE_EXTRA_CA_CERTS'] = ca
@@ -900,7 +909,12 @@ if command -v npx >/dev/null 2>&1; then
         lsof -ti tcp:3736 2>/dev/null | xargs kill -9 2>/dev/null || true
         NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}" npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first &
         ATLASSIAN_PID=$!
-        sleep 4
+        # Poll for OAuth listener (port 3736) up to 10 seconds instead of fixed sleep
+        _atl_wait=0
+        while [ "$_atl_wait" -lt 10 ]; do
+            sleep 1; _atl_wait=$((_atl_wait + 1))
+            lsof -ti tcp:3736 >/dev/null 2>&1 && break || true
+        done
         prompt "Press Enter after completing Atlassian authentication in the browser" ""
         kill "$ATLASSIAN_PID" 2>/dev/null || true
         ok "Atlassian MCP authenticated"
@@ -1003,10 +1017,12 @@ if [ "$INSTALL_SKILLS" = true ]; then
                         && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
                         || _skills_clone_error "$clone_err"
                 else
-                    fetch_err=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" fetch -q --depth 1 origin main 2>&1)
+                    fetch_err=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" fetch -q --depth 1 origin HEAD 2>&1)
                     if [ $? -ne 0 ]; then
                         _skills_clone_error "$fetch_err"
                     else
+                        local_changes=$(git -C "$ENTERPRISE_SKILLS_REPO_DIR" status --porcelain 2>/dev/null || true)
+                        [ -n "$local_changes" ] && warn "Local modifications in enterprise skills repo discarded by update"
                         git -C "$ENTERPRISE_SKILLS_REPO_DIR" reset --hard FETCH_HEAD 2>/dev/null \
                             && ENT_SOURCE="$ENTERPRISE_SKILLS_REPO_DIR" \
                             || warn "Failed to reset enterprise skills repo to latest"
@@ -1062,7 +1078,7 @@ step "Step 9 of 9 — Workspace + Version Lock"
 GITIGNORE="$PROJECT_DIR/.gitignore"
 touch "$GITIGNORE"
 for rule in "$STATE_SUBDIR/" ".claude/" ".mcp.json" "src/generated/" ".databricks/" ".env" "__pycache__/" "*.pyc"; do
-    grep -qF "$rule" "$GITIGNORE" 2>/dev/null || echo "$rule" >> "$GITIGNORE"
+    grep -qiF "$rule" "$GITIGNORE" 2>/dev/null || echo "$rule" >> "$GITIGNORE"
 done
 ok ".gitignore updated"
 

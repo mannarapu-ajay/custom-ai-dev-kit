@@ -728,6 +728,9 @@ if (-not $script:ProfileProvided -and -not $script:Silent) {
 }
 
 # -- OAuth login if not already authenticated ---------------------------------
+# Refresh PATH here in case Databricks CLI was just installed in Step 2 and wasn't in PATH yet
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
 Write-Host ""
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
     try {
@@ -740,6 +743,9 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
         Write-Warn "Not authenticated — opening browser for OAuth login..."
         & databricks auth login --host $script:WorkspaceUrl --profile $script:Profile_
     }
+} else {
+    Write-Warn "Databricks CLI not in PATH — skipping OAuth. After restarting your terminal, run:"
+    Write-Msg  "  databricks auth login --host $($script:WorkspaceUrl) --profile $($script:Profile_)"
 }
 
 # =============================================================================
@@ -938,7 +944,7 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         }
         $atlProc = Start-Process -FilePath "cmd.exe" `
             -ArgumentList "/c", "npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first" `
-            -PassThru -WindowStyle Minimized
+            -PassThru -WindowStyle Normal
         # Wait up to 10 seconds for the OAuth listener to start (poll instead of fixed sleep)
         $atlWait = 0
         while ($atlWait -lt 10) {
