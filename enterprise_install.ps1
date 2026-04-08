@@ -119,11 +119,11 @@ $script:HttpsSkillsRepo = $EnterpriseSkillsRepo -replace '^git@github\.com:', 'h
 $i = 0
 while ($i -lt $args.Count) {
     switch ($args[$i]) {
-        { $_ -in "-p","--profile","-Profile" }       { $script:Profile_ = $args[$i+1]; $script:ProfileProvided = $true; $i += 2 }
+        { $_ -in "-p","--profile","-Profile" }       { if (($i+1) -ge $args.Count) { Write-Error "-Profile requires a value"; exit 1 }; $script:Profile_ = $args[$i+1]; $script:ProfileProvided = $true; $i += 2 }
         { $_ -in "-g","--global","-Global" }          { $script:Scope = "global"; $i++ }
         { $_ -in "--skills-only","-SkillsOnly" }      { $script:InstallMcp = $false; $script:SkillsOnly = $true; $i++ }
         { $_ -in "--mcp-only","-McpOnly" }            { $script:InstallSkills = $false; $i++ }
-        { $_ -in "--skills-profile","-SkillsProfile" }{ $script:SkillsProfile = $args[$i+1]; $i += 2 }
+        { $_ -in "--skills-profile","-SkillsProfile" }{ if (($i+1) -ge $args.Count) { Write-Error "--skills-profile requires a value"; exit 1 }; $script:SkillsProfile = $args[$i+1]; $i += 2 }
         { $_ -in "--silent","-Silent" }               { $script:Silent = $true; $i++ }
         { $_ -in "-f","--force","-Force" }            { $script:Force = $true; $i++ }
         { $_ -in "-h","--help","-Help" } {
@@ -160,6 +160,72 @@ function Write-Msg  { param($m) if (-not $script:Silent) { Write-Host "  $m" } }
 function Write-Ok   { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "✓ " -ForegroundColor Green -NoNewline; Write-Host $m } }
 function Write-Warn { param($m) if (-not $script:Silent) { Write-Host "  " -NoNewline; Write-Host "! " -ForegroundColor Yellow -NoNewline; Write-Host $m } }
 function Write-Die  { param($m) Write-Host "  " -NoNewline; Write-Host "x $m" -ForegroundColor Red; exit 1 }
+
+function Refresh-Path {
+    $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $userPath    = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    $env:PATH    = "$machinePath;$userPath"
+}
+
+function Ensure-Scoop {
+    if (Get-Command scoop -ErrorAction SilentlyContinue) { return }
+    Write-Msg "Scoop not found — installing..."
+    try { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue } catch {}
+    Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+    Refresh-Path
+    if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
+        Write-Warn "Scoop installation failed. Install manually: https://scoop.sh"
+    }
+}
+
+function Install-GhFromZip {
+    # Extracts gh directly to the user profile — no admin, no installer required.
+    # Reliable fallback on corporate machines where proxies break Scoop hashes
+    # and winget MSI installers require elevation.
+    Write-Msg "Installing gh CLI via direct ZIP extraction (no admin required)..."
+
+    $ghDir  = "$env:USERPROFILE\AppData\Local\Programs\gh"
+    $tmpZip = "$env:TEMP\gh_windows_amd64.zip"
+    $tmpDir = "$env:TEMP\gh_extract"
+
+    # Resolve latest release download URL via GitHub API
+    $downloadUrl = $null
+    try {
+        $release     = Invoke-RestMethod -Uri "https://api.github.com/repos/cli/cli/releases/latest" -UseBasicParsing
+        $asset       = $release.assets | Where-Object { $_.name -like "*windows_amd64.zip" } | Select-Object -First 1
+        $downloadUrl = $asset.browser_download_url
+        Write-Msg "Latest gh release: $($release.tag_name)"
+    } catch {
+        # Fallback to a known stable version
+        $downloadUrl = "https://github.com/cli/cli/releases/download/v2.67.0/gh_2.67.0_windows_amd64.zip"
+        Write-Msg "Could not query GitHub API — using fallback version"
+    }
+
+    Write-Msg "Downloading gh..."
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+
+    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+    if (Test-Path $ghDir)  { Remove-Item $ghDir  -Recurse -Force }
+
+    New-Item -ItemType Directory -Path $ghDir -Force | Out-Null
+    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+
+    # The zip contains a versioned subdirectory; find gh.exe and copy its parent contents
+    $ghExe = Get-ChildItem -Path $tmpDir -Filter "gh.exe" -Recurse | Select-Object -First 1
+    if (-not $ghExe) { Write-Die "gh.exe not found in downloaded archive." }
+    Copy-Item -Path (Join-Path $ghExe.DirectoryName "*") -Destination $ghDir -Recurse -Force
+
+    # Persist to user PATH so it survives future sessions
+    $userPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($userPath -notlike "*$ghDir*") {
+        [System.Environment]::SetEnvironmentVariable("PATH", "$ghDir;$userPath", "User")
+    }
+    $env:PATH = "$ghDir;" + $env:PATH
+
+    # Cleanup
+    Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 function Write-Step {
     param($m)
     if (-not $script:Silent) {
@@ -201,7 +267,6 @@ function Invoke-RadioSelect {
     }
     $count    = $labels.Count
     $cursor   = 0
-    $selected = 0
 
     # Non-interactive fallback (no console / output redirected)
     if ([Console]::IsOutputRedirected -or [Console]::IsInputRedirected) {
@@ -233,8 +298,7 @@ function Invoke-RadioSelect {
             $arrow = "    "
             $dot   = "o"
             $color = [ConsoleColor]::DarkGray
-            if ($idx -eq $cursor)   { $arrow = "  > " }
-            if ($idx -eq $selected) { $dot = "*"; $color = [ConsoleColor]::Green }
+            if ($idx -eq $cursor) { $arrow = "  > "; $dot = "*"; $color = [ConsoleColor]::Green }
             $line = "  $arrow$dot  $($labels[$idx])   $($hints[$idx])"
             $line = $line.PadRight($winW - 1).Substring(0, [Math]::Min($line.Length + ($winW - 1 - $line.Length), $winW - 1))
             $prev = [Console]::ForegroundColor
@@ -263,14 +327,12 @@ function Invoke-RadioSelect {
             switch ($key.Key) {
                 "UpArrow"   { if ($cursor -gt 0)      { $cursor-- } }
                 "DownArrow" { if ($cursor -lt $count)  { $cursor++ } }
-                "Spacebar"  { if ($cursor -lt $count)  { $selected = $cursor } }
                 "Enter" {
-                    if ($cursor -lt $count) { $selected = $cursor }
                     & $redraw
                     # Move cursor below the list before returning
                     [Console]::SetCursorPosition(0, $startRow + $count + 2)
                     [Console]::CursorVisible = $true
-                    return $values[$selected]
+                    return $values[$cursor]
                 }
             }
             & $redraw
@@ -285,9 +347,12 @@ function Invoke-RadioSelect {
 # =============================================================================
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   $EnterpriseDisplay — Enterprise AI Dev Kit Installer         ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+$_bannerInner = 56
+$_bannerTitle = "   $EnterpriseDisplay — Enterprise AI Dev Kit Installer"
+if ($_bannerTitle.Length -gt $_bannerInner) { $_bannerInner = $_bannerTitle.Length + 2 }
+Write-Host ("╔" + ("═" * $_bannerInner) + "╗") -ForegroundColor Cyan
+Write-Host ("║" + $_bannerTitle.PadRight($_bannerInner) + "║") -ForegroundColor Cyan
+Write-Host ("╚" + ("═" * $_bannerInner) + "╝") -ForegroundColor Cyan
 Write-Host ""
 Write-Warn "NOTE: Do NOT run the official Databricks install.ps1 alongside this script."
 Write-Msg  "  This enterprise installer fully replaces it. Running both will break the MCP config."
@@ -407,33 +472,27 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
 
 # gh CLI (needed for GitHub MCP OAuth + SSH key setup)
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    $ghVer = & gh --version 2>&1 | Select-Object -First 1
-    Write-Ok "gh CLI: $ghVer"
+    Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1)"
 } else {
-    Write-Warn "gh CLI not found — installing via winget..."
-    try {
-        & winget install GitHub.cli --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        # Winget may install to a path not yet reflected in env vars — probe common locations
-        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-            $ghSearchPaths = @(
-                "${env:ProgramFiles}\GitHub CLI",
-                "${env:LOCALAPPDATA}\Programs\GitHub CLI",
-                "${env:ProgramFiles(x86)}\GitHub CLI"
-            )
-            foreach ($ghPath in $ghSearchPaths) {
-                if (Test-Path (Join-Path $ghPath "gh.exe")) {
-                    $env:Path = "$ghPath;$env:Path"
-                    break
-                }
-            }
-        }
-        if (Get-Command gh -ErrorAction SilentlyContinue) {
-            Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1) (just installed)"
-        } else {
-            Write-Warn "winget install gh CLI succeeded but gh not in PATH yet — restart your terminal or install manually: https://cli.github.com"
-        }
-    } catch {
+    Write-Msg "gh CLI not found — installing..."
+
+    # Try Scoop first (may fail on corporate proxies due to hash mismatch)
+    Ensure-Scoop
+    if (Get-Command scoop -ErrorAction SilentlyContinue) {
+        & scoop update 2>&1 | Out-Null
+        & scoop install gh 2>&1 | Out-Null
+        Refresh-Path
+    }
+
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        # Scoop hash check failed (corporate SSL inspection rewrites downloads).
+        # Extract directly from the zip — no installer, no admin required.
+        Install-GhFromZip
+    }
+
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1) (just installed)"
+    } else {
         Write-Warn "Could not auto-install gh CLI — install manually: https://cli.github.com"
     }
 }
@@ -455,9 +514,12 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             Write-Msg "Generating dedicated McCain SSH key..."
             $gitEmail   = try { if (Get-Command gh -ErrorAction SilentlyContinue) { & gh api user --jq '.email' 2>$null } } catch { "" }
             $keyComment = if ($gitEmail) { $gitEmail } else { "mccain-adk" }
-            # PowerShell 5.x drops empty-string args to native commands — use '""' (two double-quotes)
-            # so the C-runtime receives an empty string for the passphrase parameter.
-            & ssh-keygen -t ed25519 -C $keyComment -f $mccainKey -N '""'
+            # PS 7+ passes empty string correctly; PS 5.x drops empty args to native exe so needs '""'
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                & ssh-keygen -t ed25519 -C $keyComment -f $mccainKey -N ""
+            } else {
+                & ssh-keygen -t ed25519 -C $keyComment -f $mccainKey -N '""'
+            }
             if (Test-Path $mccainKey) {
                 Write-Ok "McCain SSH key generated: $mccainKey"
             } else {
@@ -477,8 +539,12 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
         } else {
             $hostLabel = "Enterprise ADK - $env:COMPUTERNAME"
             Write-Msg "Registering McCain SSH key on GitHub..."
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             $addErr = (& gh ssh-key add $mccainKeyPub --title $hostLabel 2>&1) | Out-String
-            if ($LASTEXITCODE -eq 0) {
+            $addExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            if ($addExit -eq 0 -or $addErr -match "already exists") {
                 Write-Ok "McCain SSH key registered on GitHub ($hostLabel)"
 
                 # Open GitHub SSH keys page so user can authorize the key for SAML SSO
@@ -497,7 +563,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                 Write-Host ""
                 Read-Prompt "Press Enter once you have authorized the key (or to skip if SSO is not required)" "" | Out-Null
             } else {
-                Write-Warn "Could not register key: $($addErr.Trim())"
+                Write-Warn "Could not register SSH key: $($addErr.Trim())"
             }
         }
 
@@ -758,31 +824,31 @@ if ($script:InstallMcp) {
     & $VenvPython -c "import databricks_mcp_server" 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Die "MCP server import failed after install." }
     Write-Ok "MCP server ready  ->  $VenvDir"
+
+    # -- Write .mcp.json with Databricks entry ------------------------------------
+    $mcpJson = if (Test-Path $McpConfig) {
+        try { Get-Content $McpConfig -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
+    } else { [PSCustomObject]@{} }
+
+    if (-not $mcpJson.PSObject.Properties['mcpServers']) {
+        $mcpJson | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue ([PSCustomObject]@{})
+    }
+
+    $dbEnv = [PSCustomObject]@{ DATABRICKS_CONFIG_PROFILE = $script:Profile_ }
+    if ($env:NODE_EXTRA_CA_CERTS) {
+        $dbEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS
+    }
+
+    $mcpJson.mcpServers | Add-Member -NotePropertyName 'databricks' -NotePropertyValue ([PSCustomObject]@{
+        command       = $VenvPython
+        args          = @($McpEntry)
+        defer_loading = $true
+        env           = $dbEnv
+    }) -Force
+
+    $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
+    Write-Ok "Databricks MCP  ->  $McpConfig"
 }
-
-# -- Write .mcp.json with Databricks entry ------------------------------------
-$mcpJson = if (Test-Path $McpConfig) {
-    try { Get-Content $McpConfig -Raw | ConvertFrom-Json } catch { [PSCustomObject]@{} }
-} else { [PSCustomObject]@{} }
-
-if (-not $mcpJson.PSObject.Properties['mcpServers']) {
-    $mcpJson | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue ([PSCustomObject]@{})
-}
-
-$dbEnv = [PSCustomObject]@{ DATABRICKS_CONFIG_PROFILE = $script:Profile_ }
-if ($env:NODE_EXTRA_CA_CERTS) {
-    $dbEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS
-}
-
-$mcpJson.mcpServers | Add-Member -NotePropertyName 'databricks' -NotePropertyValue ([PSCustomObject]@{
-    command       = $VenvPython
-    args          = @($McpEntry)
-    defer_loading = $true
-    env           = $dbEnv
-}) -Force
-
-$mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
-Write-Ok "Databricks MCP  ->  $McpConfig"
 
 # =============================================================================
 # -- STEP 6: GITHUB MCP -------------------------------------------------------
@@ -794,7 +860,7 @@ Write-Step "Step 6 of 9 — GitHub MCP"
 
 # -- Add GitHub entry to .mcp.json --------------------------------------------
 $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
-$githubEnv = [PSCustomObject]@{ GITHUB_PERSONAL_ACCESS_TOKEN = "" }
+$githubEnv = [PSCustomObject]@{ GITHUB_PERSONAL_ACCESS_TOKEN = $null }
 if ($GitHubApiUrl) { $githubEnv | Add-Member -NotePropertyName 'GITHUB_API_URL' -NotePropertyValue $GitHubApiUrl }
 if ($env:NODE_EXTRA_CA_CERTS) { $githubEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS }
 $mcpJson.mcpServers | Add-Member -NotePropertyName 'github' -NotePropertyValue ([PSCustomObject]@{
@@ -873,7 +939,13 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         $atlProc = Start-Process -FilePath "cmd.exe" `
             -ArgumentList "/c", "npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first" `
             -PassThru -WindowStyle Minimized
-        Start-Sleep -Seconds 4
+        # Wait up to 10 seconds for the OAuth listener to start (poll instead of fixed sleep)
+        $atlWait = 0
+        while ($atlWait -lt 10) {
+            Start-Sleep -Seconds 1; $atlWait++
+            try { $conn = Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue } catch { $conn = $null }
+            if ($conn) { break }
+        }
         Read-Prompt "Press Enter after completing Atlassian authentication in the browser" ""
         if ($atlProc -and -not $atlProc.HasExited) {
             try { & taskkill /F /T /PID $atlProc.Id 2>&1 | Out-Null } catch {}
@@ -978,10 +1050,12 @@ if ($script:InstallSkills) {
                     $cloneErr = (& git clone -q --depth 1 $skillsCloneUrl $EntSkillsRepoDir 2>&1) | Out-String
                     if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Invoke-SkillsCloneError $cloneErr }
                 } else {
-                    $fetchErr = (& git -C $EntSkillsRepoDir fetch -q --depth 1 origin main 2>&1) | Out-String
+                    $fetchErr = (& git -C $EntSkillsRepoDir fetch -q --depth 1 origin HEAD 2>&1) | Out-String
                     if ($LASTEXITCODE -ne 0) {
                         Invoke-SkillsCloneError $fetchErr
                     } else {
+                        $localChanges = (& git -C $EntSkillsRepoDir status --porcelain 2>$null) | Out-String
+                        if ($localChanges.Trim()) { Write-Warn "Local modifications in enterprise skills repo discarded by update" }
                         try { & git -C $EntSkillsRepoDir reset --hard FETCH_HEAD 2>&1 | Out-Null } catch {}
                         if ($LASTEXITCODE -eq 0) { $entSource = $EntSkillsRepoDir } else { Write-Warn "Failed to reset enterprise skills repo to latest" }
                     }
@@ -1032,7 +1106,7 @@ $gitignore = Join-Path $script:ProjectDir ".gitignore"
 if (-not (Test-Path $gitignore)) { New-Item -ItemType File -Path $gitignore -Force | Out-Null }
 $giContent = Get-Content $gitignore -ErrorAction SilentlyContinue
 foreach ($rule in @("$StateSubdir/", ".claude/", ".mcp.json", "src/generated/", ".databricks/", ".env", "__pycache__/", "*.pyc")) {
-    if ($giContent -notcontains $rule) { Add-Content $gitignore $rule }
+    if (-not ($giContent | Where-Object { $_.Trim() -ieq $rule })) { Add-Content $gitignore $rule }
 }
 Write-Ok ".gitignore updated"
 
@@ -1099,10 +1173,10 @@ if (Test-Path $metaFile) {
         }
         $old | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
     } catch {
-        $meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
+        [PSCustomObject]$meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
     }
 } else {
-    $meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
+    [PSCustomObject]$meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
 }
 
 $lock = [ordered]@{
@@ -1111,7 +1185,7 @@ $lock = [ordered]@{
     databricks_workspace = $script:WorkspaceUrl
     installed_at         = $now
 }
-$lock | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $StateDirPath "version.lock") -Encoding UTF8
+[PSCustomObject]$lock | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $StateDirPath "version.lock") -Encoding UTF8
 
 Write-Ok "$StateSubdir/metadata.json"
 Write-Ok "$StateSubdir/version.lock"
