@@ -41,11 +41,6 @@ $EnterpriseSkillsRepoSubpath = "mccain-data-architecture-skills"
 # Or set an absolute path to any directory that contains skill sub-folders.
 $EnterpriseSkillsPath = ""
 
-# GitHub Enterprise - set if your org uses GitHub Enterprise Server (not github.com).
-# Example: "https://github.mccainfoods.com/api/v3"
-# Leave empty to use public github.com.
-$GitHubApiUrl = ""
-
 # Databricks workspace catalog - add or remove entries as domains change.
 $WorkspaceNames = @(
     "Growth", "Supply Chain", "Finance", "Agriculture",
@@ -135,7 +130,7 @@ while ($i -lt $args.Count) {
             Write-Host "Options:"
             Write-Host "  -Profile NAME        Databricks profile (default: DEFAULT)"
             Write-Host "  -Global              Install globally (not per-project)"
-            Write-Host "  -SkillsOnly          Fast path: only update skills (skip Steps 3-7, 9)"
+            Write-Host "  -SkillsOnly          Fast path: only update skills (runs Steps 2 + 7 only)"
             Write-Host "  -McpOnly             Skip skills installation"
             Write-Host "  -SkillsProfile LIST  Skill profiles: all,data-engineer,analyst,ai-ml-engineer,app-developer"
             Write-Host "  -Silent              No output except errors"
@@ -171,7 +166,12 @@ function Ensure-Scoop {
     if (Get-Command scoop -ErrorAction SilentlyContinue) { return }
     Write-Msg "Scoop not found — installing..."
     try { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue } catch {}
-    Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+    try {
+        Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+    } catch {
+        Write-Warn "Scoop installation failed. Install manually: https://scoop.sh"
+        return
+    }
     Refresh-Path
     if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
         Write-Warn "Scoop installation failed. Install manually: https://scoop.sh"
@@ -202,7 +202,12 @@ function Install-GhFromZip {
     }
 
     Write-Msg "Downloading gh..."
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+    } catch {
+        Write-Warn "Failed to download gh CLI — install manually: https://cli.github.com"
+        return
+    }
 
     if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
     if (Test-Path $ghDir)  { Remove-Item $ghDir  -Recurse -Force }
@@ -367,7 +372,7 @@ if ($script:SkillsOnly) {
     $script:ProjectDir = (Get-Location).Path
     Write-Ok "Project dir: $($script:ProjectDir)"
 } else {
-    Write-Step "Step 1 of 9 — Project Directory"
+    Write-Step "Step 1 of 8 — Project Directory"
     $script:ProjectDir = Read-Prompt "Project directory" (Get-Location).Path
     if (-not (Test-Path $script:ProjectDir)) { New-Item -ItemType Directory -Path $script:ProjectDir -Force | Out-Null }
     $script:ProjectDir = (Resolve-Path $script:ProjectDir).Path
@@ -395,61 +400,35 @@ Write-Ok "Workspace directories created"
 # -- STEP 2: PREREQUISITES ----------------------------------------------------
 # =============================================================================
 
-Write-Step "Step 2 of 9 — Prerequisites"
+Write-Step "Step 2 of 8 — Prerequisites"
+
+# ── git is always needed (clones skills repo even in --skills-only mode) ──────
+$_prereqScript = Join-Path $ScriptDir "prerequisites.ps1"
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    Write-Ok "$(& git --version 2>&1)"
+} else {
+    Write-Die "git not found. Run prerequisites first: powershell -ExecutionPolicy Bypass -File `"$_prereqScript`""
+}
 
 if (-not $script:SkillsOnly) {
 
-# git
-if (Get-Command git -ErrorAction SilentlyContinue) {
-    Write-Ok "git $(& git --version 2>&1)"
-} else {
-    Write-Warn "git not found — installing via winget..."
-    try {
-        & winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        if (Get-Command git -ErrorAction SilentlyContinue) {
-            Write-Ok "git $(& git --version 2>&1) (just installed)"
-        } else {
-            Write-Warn "Git installed but not in PATH yet — restart terminal or install manually: https://git-scm.com"
-        }
-    } catch {
-        Write-Die "git required. Install: https://git-scm.com"
+# ── verify uv and node are installed (come from prerequisites.ps1) ────────────
+$_prereqOk = $true
+foreach ($_chk in @("uv", "npx")) {
+    if (Get-Command $_chk -ErrorAction SilentlyContinue) {
+        $_ver = (& $_chk --version 2>&1 | Select-Object -First 1).ToString()
+        # npx --version outputs a bare number; prefix the tool name for clarity
+        if ($_ver -match '^\d') { Write-Ok "$_chk $_ver" } else { Write-Ok "$_ver" }
+    } else {
+        Write-Warn "$_chk not found — run prerequisites first: powershell -ExecutionPolicy Bypass -File `"$_prereqScript`""
+        $_prereqOk = $false
     }
 }
-
-# npx / Node.js (needed for GitHub MCP + Atlassian MCP)
-if (Get-Command npx -ErrorAction SilentlyContinue) {
-    $nodeVer = & node --version 2>$null
-    Write-Ok "Node.js $nodeVer / npx"
-} else {
-    Write-Warn "Node.js not found — installing via winget..."
-    try {
-        & winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-        # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        if (Get-Command npx -ErrorAction SilentlyContinue) {
-            Write-Ok "Node.js $(& node --version 2>$null) / npx (just installed)"
-        } else {
-            Write-Warn "winget install Node.js succeeded but npx not in PATH yet — restart your terminal or install manually: https://nodejs.org"
-        }
-    } catch {
-        Write-Warn "Could not auto-install Node.js — install manually: https://nodejs.org"
-    }
+if (-not $_prereqOk) {
+    Write-Die "Missing prerequisites. Run:  powershell -ExecutionPolicy Bypass -File `"$_prereqScript`"  then re-run this installer."
 }
 
-# uv (Python package manager for MCP server)
-if (Get-Command uv -ErrorAction SilentlyContinue) {
-    Write-Ok "$(& uv --version)"
-} else {
-    Write-Warn "uv not found — installing..."
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-    # Refresh PATH
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Write-Die "uv install failed. Run: Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression" }
-    Write-Ok "$(& uv --version) (just installed)"
-}
-
-# Databricks CLI
+# ── Databricks CLI (only tool installed here — not covered by prerequisites) ──
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
     Write-Ok "Databricks CLI: $(& databricks --version 2>&1 | Select-Object -First 1)"
 } else {
@@ -470,7 +449,7 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
 
 } # end SkillsOnly skip
 
-# gh CLI (needed for GitHub MCP OAuth + SSH key setup)
+# gh CLI (needed for SSH key setup and enterprise skills repo access)
 if (Get-Command gh -ErrorAction SilentlyContinue) {
     Write-Ok "gh CLI: $(& gh --version 2>&1 | Select-Object -First 1)"
 } else {
@@ -651,16 +630,60 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
     }
 
     # ── Proactive repo access check ───────────────────────────────────────────
-    if ($script:SkillsAuthMode -ne "skip" -and (Get-Command gh -ErrorAction SilentlyContinue)) {
-        & gh auth status 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            $skillsRepoPath = $EnterpriseSkillsRepo -replace '^git@github\.com:', '' -replace '\.git$', ''
-            Write-Msg "Checking access to enterprise skills repo..."
-            & gh api "repos/$skillsRepoPath" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Enterprise skills repo accessible"
+    # Use git ls-remote with the dedicated McCain SSH key — tests the exact same
+    # auth path as the real clone, and produces SAML-specific error messages.
+    if ($script:SkillsAuthMode -ne "skip") {
+        Write-Msg "Checking access to enterprise skills repo..."
+        $_mccainKey = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+        $_repoCheckErr = ""
+        try {
+            & git ls-remote --exit-code $EnterpriseSkillsRepo HEAD 2>&1 | Out-Null
+            $_repoOk = ($LASTEXITCODE -eq 0)
+        } catch {
+            $_repoOk = $false
+        }
+        $env:GIT_SSH_COMMAND = $null
+
+        if ($_repoOk) {
+            Write-Ok "Enterprise skills repo accessible"
+        } else {
+            # Re-run capturing stderr to detect SAML/SSO errors
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+            $_repoCheckErr = (& git ls-remote $EnterpriseSkillsRepo HEAD 2>&1) -join "`n"
+            $env:GIT_SSH_COMMAND = $null
+
+            if ($_repoCheckErr -match "SAML|SSO|single sign.?on|organization has enabled") {
+                Write-Host ""
+                Write-Warn "SAML SSO authorization required for enterprise skills repo"
+                Write-Msg  "  Your SSH key needs to be authorized for the $EnterpriseOrg org."
+                Write-Msg  "  Opening GitHub SSH keys page in your browser..."
+                try { Start-Process "https://github.com/settings/keys" } catch {}
+                Write-Host ""
+                Write-Msg  "  In your browser:"
+                Write-Msg  "    1. Find your SSH key"
+                Write-Msg  "    2. Click:  Configure SSO"
+                Write-Msg  "    3. Click:  Authorize `"$EnterpriseOrg`""
+                Write-Host ""
+                Read-Host "  Press Enter once you have authorized the key (or to skip)"
+                # Re-test after user authorizes
+                $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+                try {
+                    & git ls-remote --exit-code $EnterpriseSkillsRepo HEAD 2>&1 | Out-Null
+                    $_repoOk2 = ($LASTEXITCODE -eq 0)
+                } catch {
+                    $_repoOk2 = $false
+                }
+                $env:GIT_SSH_COMMAND = $null
+                if ($_repoOk2) {
+                    Write-Ok "Enterprise skills repo accessible"
+                } else {
+                    Write-Warn "Still cannot reach skills repo — continuing without skills"
+                    Write-Msg  "  Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after authorizing"
+                    $script:SkillsAuthMode = "skip"
+                }
             } else {
-                Write-Warn "Account '$ghUser' does not have access to: $EnterpriseSkillsRepo"
+                Write-Warn "Account '$($ghUser ?? 'unknown')' does not have access to: $EnterpriseSkillsRepo"
                 Write-Msg  "  Contact your administrator to get access, then re-run:"
                 Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
                 Write-Msg  "  Continuing with MCP and other setup..."
@@ -676,7 +699,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
 
 if (-not $script:SkillsOnly) {
 
-Write-Step "Step 3 of 9 — Databricks Workspace & Profile"
+Write-Step "Step 3 of 8 — Databricks Workspace & Profile"
 
 # -- Workspace selection ------------------------------------------------------
 $wsItems = @()
@@ -752,7 +775,7 @@ if (Get-Command databricks -ErrorAction SilentlyContinue) {
 # -- STEP 4: AUTHENTICATION + CA CERTIFICATES ---------------------------------
 # =============================================================================
 
-Write-Step "Step 4 of 9 — Authentication + CA Certificates"
+Write-Step "Step 4 of 8 — Authentication + CA Certificates"
 
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
     try {
@@ -809,11 +832,10 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
 # -- STEP 5: DATABRICKS MCP ---------------------------------------------------
 # =============================================================================
 
-Write-Step "Step 5 of 9 — Databricks MCP"
-
 $McpConfig = Join-Path $script:ProjectDir ".mcp.json"
 
 if ($script:InstallMcp) {
+    Write-Step "Step 5 of 8 — Databricks MCP"
     Write-Msg "Setting up Databricks MCP server..."
     if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server"))) { Write-Die "databricks-mcp-server not found in $ScriptDir" }
 
@@ -856,60 +878,13 @@ if ($script:InstallMcp) {
     Write-Ok "Databricks MCP  ->  $McpConfig"
 }
 
-# =============================================================================
-# -- STEP 6: GITHUB MCP -------------------------------------------------------
-# =============================================================================
-
 if (-not $script:SkillsOnly) {
 
-Write-Step "Step 6 of 9 — GitHub MCP"
-
-# -- Add GitHub entry to .mcp.json --------------------------------------------
-$mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
-$githubEnv = [PSCustomObject]@{ GITHUB_PERSONAL_ACCESS_TOKEN = $null }
-if ($GitHubApiUrl) { $githubEnv | Add-Member -NotePropertyName 'GITHUB_API_URL' -NotePropertyValue $GitHubApiUrl }
-if ($env:NODE_EXTRA_CA_CERTS) { $githubEnv | Add-Member -NotePropertyName 'NODE_EXTRA_CA_CERTS' -NotePropertyValue $env:NODE_EXTRA_CA_CERTS }
-$mcpJson.mcpServers | Add-Member -NotePropertyName 'github' -NotePropertyValue ([PSCustomObject]@{
-    command = "npx"
-    args    = @("-y", "@modelcontextprotocol/server-github")
-    env     = $githubEnv
-}) -Force
-$mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
-
-# -- OAuth via gh CLI ---------------------------------------------------------
-Write-Msg "Authenticating GitHub MCP via OAuth..."
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-    try { $ghUser = & gh api user --jq '.login' 2>$null } catch { $ghUser = "" }
-    if ($ghUser) {
-        Write-Ok "GitHub: already authenticated as $ghUser"
-    } else {
-        Write-Msg "Opening browser for GitHub OAuth login..."
-        # Run login; ignore non-zero exit from "key already in use" - auth may still succeed
-        try { & gh auth login --web --git-protocol ssh 2>&1 | Out-Null } catch {}
-        try { $ghUser = & gh api user --jq '.login' 2>$null } catch { $ghUser = "" }
-        if (-not $ghUser) {
-            Write-Warn "GitHub auth could not be confirmed — token may still work"
-        }
-    }
-    try { $ghToken = & gh auth token 2>$null } catch { $ghToken = "" }
-    if ($ghToken) {
-        $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
-        $mcpJson.mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN = $ghToken
-        $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
-        Write-Ok "GitHub MCP authenticated as $(if ($ghUser) { $ghUser } else { 'unknown' })"
-    } else {
-        Write-Warn "Could not retrieve GitHub token — edit GITHUB_PERSONAL_ACCESS_TOKEN in .mcp.json manually"
-    }
-} else {
-    Write-Warn "gh CLI not found — install it for OAuth: https://cli.github.com"
-    Write-Warn "Or set GITHUB_PERSONAL_ACCESS_TOKEN manually in .mcp.json"
-}
-
 # =============================================================================
-# -- STEP 7: ATLASSIAN MCP ----------------------------------------------------
+# -- STEP 6: ATLASSIAN MCP ----------------------------------------------------
 # =============================================================================
 
-Write-Step "Step 7 of 9 — Atlassian MCP"
+Write-Step "Step 6 of 8 — Atlassian MCP"
 
 # -- Add Atlassian entry to .mcp.json -----------------------------------------
 $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
@@ -978,13 +953,13 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
     Write-Warn "npx not found — Atlassian MCP OAuth skipped. Install Node.js first."
 }
 
-} # end SkillsOnly skip (Steps 6 + 7)
+} # end SkillsOnly skip (Step 6 (Atlassian MCP))
 
 # =============================================================================
-# -- STEP 8: SKILLS + SETTINGS ------------------------------------------------
+# -- STEP 7: SKILLS + SETTINGS ------------------------------------------------
 # =============================================================================
 
-Write-Step "Step 8 of 9 — Skills + Settings"
+Write-Step "Step 7 of 8 — Skills + Settings"
 
 # -- Write .claude/settings.json ----------------------------------------------
 $settingsPath = Join-Path $script:ProjectDir ".claude\settings.json"
@@ -1113,12 +1088,12 @@ if ($script:InstallSkills) {
 }
 
 # =============================================================================
-# -- STEP 9: WORKSPACE + VERSION LOCK -----------------------------------------
+# -- STEP 8: WORKSPACE + VERSION LOCK -----------------------------------------
 # =============================================================================
 
 if (-not $script:SkillsOnly) {
 
-Write-Step "Step 9 of 9 — Workspace + Version Lock"
+Write-Step "Step 8 of 8 — Workspace + Version Lock"
 
 # -- .gitignore ---------------------------------------------------------------
 $gitignore = Join-Path $script:ProjectDir ".gitignore"

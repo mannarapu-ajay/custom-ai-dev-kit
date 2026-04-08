@@ -47,11 +47,6 @@ ENTERPRISE_SKILLS_REPO_SUBPATH="mccain-data-architecture-skills"
 # Or set an absolute path to any directory that contains skill sub-folders.
 ENTERPRISE_SKILLS_PATH=""
 
-# GitHub Enterprise — set if your org uses GitHub Enterprise Server (not github.com).
-# Example: "https://github.mccainfoods.com/api/v3"
-# Leave empty to use public github.com.
-GITHUB_API_URL=""
-
 # Databricks workspace catalog — add or remove entries as domains change.
 WORKSPACE_NAMES=(
     "Growth"
@@ -150,7 +145,7 @@ while [ $# -gt 0 ]; do
             echo "Options:"
             echo "  -p, --profile NAME     Databricks profile (default: DEFAULT)"
             echo "  -g, --global           Install globally (not per-project)"
-            echo "  --skills-only          Fast path: only update skills (skip Steps 3-7, 9)"
+            echo "  --skills-only          Fast path: only update skills (runs Steps 2 + 7 only)"
             echo "  --mcp-only             Skip skills installation"
             echo "  --skills-profile LIST  Skill profiles: all,data-engineer,analyst,ai-ml-engineer,app-developer"
             echo "  --silent               No output except errors"
@@ -318,7 +313,7 @@ if [ "$SKILLS_ONLY" = true ]; then
     PROJECT_DIR="$(pwd)"
     ok "Project dir: $PROJECT_DIR"
 else
-    step "Step 1 of 9 — Project Directory"
+    step "Step 1 of 8 — Project Directory"
     PROJECT_DIR=$(prompt "Project directory" "$(pwd)")
     mkdir -p "$PROJECT_DIR"
     PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
@@ -345,60 +340,38 @@ ok "Workspace directories created"
 # ── STEP 2: PREREQUISITES ─────────────────────────────────────────────────────
 # =============================================================================
 
-step "Step 2 of 9 — Prerequisites"
+step "Step 2 of 8 — Prerequisites"
+
+# ── git is always needed (clones skills repo even in --skills-only mode) ──────
+_PREREQ_SCRIPT="$(dirname "$0")/prerequisites.sh"
+if command -v git >/dev/null 2>&1; then
+    ok "$(git --version)"
+else
+    die "git not found. Run prerequisites first:  bash $_PREREQ_SCRIPT"
+fi
 
 if [ "$SKILLS_ONLY" = false ]; then
 
-# ── git ───────────────────────────────────────────────────────────────────────
-if command -v git >/dev/null 2>&1; then
-    ok "git $(git --version | awk '{print $3}')"
-else
-    # On macOS, invoking git may trigger Xcode CLI install prompt — try it
-    if [ "$(uname)" = "Darwin" ]; then
-        warn "git not found — attempting Xcode CLI install…"
-        xcode-select --install 2>/dev/null || true
-        sleep 5
-    fi
-    command -v git >/dev/null 2>&1 || die "git required. Install: https://git-scm.com"
-    ok "git $(git --version | awk '{print $3}') (just installed)"
-fi
-
-# ── Node.js / npx (needed for GitHub MCP + Atlassian MCP) ────────────────────
-if command -v npx >/dev/null 2>&1; then
-    ok "Node.js $(node --version 2>/dev/null || echo '?') / npx"
-else
-    warn "Node.js not found — installing…"
-    if command -v brew >/dev/null 2>&1; then
-        brew install node --quiet \
-            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
-            || warn "brew install node failed — install manually: https://nodejs.org"
-    elif command -v apt-get >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - 2>/dev/null \
-            && sudo apt-get install -y nodejs 2>/dev/null \
-            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
-            || warn "apt install node failed — install manually: https://nodejs.org"
-    elif command -v yum >/dev/null 2>&1; then
-        curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash - 2>/dev/null \
-            && sudo yum install -y nodejs 2>/dev/null \
-            && ok "Node.js $(node --version 2>/dev/null) / npx (just installed)" \
-            || warn "yum install node failed — install manually: https://nodejs.org"
+# ── verify uv and node are installed (come from prerequisites.sh) ─────────────
+_prereq_ok=true
+for _chk in uv npx; do
+    if command -v "$_chk" >/dev/null 2>&1; then
+        _ver=$($_chk --version 2>&1 | head -1)
+        # npx --version outputs a bare number; prefix the tool name for clarity
+        case "$_ver" in
+            [0-9]*) ok "$_chk $_ver" ;;
+            *)      ok "$_ver" ;;
+        esac
     else
-        warn "No package manager found — install Node.js manually: https://nodejs.org"
+        warn "$_chk not found — run prerequisites first: bash $_PREREQ_SCRIPT"
+        _prereq_ok=false
     fi
+done
+if [ "$_prereq_ok" = false ]; then
+    die "Missing prerequisites. Run:  bash $_PREREQ_SCRIPT  then re-run this installer."
 fi
 
-# ── uv (Python package manager for MCP server) ────────────────────────────────
-if command -v uv >/dev/null 2>&1; then
-    ok "$(uv --version)"
-else
-    warn "uv not found — installing…"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-    command -v uv >/dev/null 2>&1 || die "uv install failed. Run: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    ok "$(uv --version) (just installed)"
-fi
-
-# ── Databricks CLI ────────────────────────────────────────────────────────────
+# ── Databricks CLI (only tool installed here — not covered by prerequisites) ──
 if command -v databricks >/dev/null 2>&1; then
     ok "Databricks CLI: $(databricks --version 2>&1 | head -1)"
 else
@@ -408,12 +381,12 @@ else
         brew install databricks --quiet \
             && ok "Databricks CLI: $(databricks --version 2>&1 | head -1) (just installed)" \
             || { warn "brew install failed — trying curl installer…"
-                 curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                 curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh || true
                  command -v databricks >/dev/null 2>&1 \
                      && ok "Databricks CLI installed" \
                      || warn "Databricks CLI install failed — install manually and re-run"; }
     else
-        curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+        curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh || true
         command -v databricks >/dev/null 2>&1 \
             && ok "Databricks CLI installed" \
             || warn "Databricks CLI install failed — install manually and re-run"
@@ -422,7 +395,7 @@ fi
 
 fi  # end SKILLS_ONLY skip
 
-# ── gh CLI (needed for GitHub MCP OAuth + SSH key setup) ──────────────────────
+# ── gh CLI (needed for SSH key setup and enterprise skills repo access) ──────────────────────
 if command -v gh >/dev/null 2>&1; then
     ok "gh CLI: $(gh --version 2>&1 | head -1)"
 else
@@ -600,17 +573,55 @@ cfg.write_text(new_content)
     fi
 
     # ── Proactive repo access check ───────────────────────────────────────────
-    if [ "$SKILLS_AUTH_MODE" != "skip" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-        SKILLS_REPO_PATH=$(echo "$ENTERPRISE_SKILLS_REPO" | sed 's|git@github\.com:||;s|\.git$||')
+    # Use git ls-remote with the dedicated McCain SSH key — this tests the exact
+    # same auth path used by the actual clone, and requires no gh API scope.
+    if [ "$SKILLS_AUTH_MODE" != "skip" ]; then
         msg "Checking access to enterprise skills repo..."
-        if gh api "repos/$SKILLS_REPO_PATH" >/dev/null 2>&1; then
+        _mccain_key="$HOME/.ssh/id_ed25519_mccain"
+        _repo_check_err=""
+        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=$_mccain_key -o IdentitiesOnly=yes" \
+           git ls-remote --exit-code "$ENTERPRISE_SKILLS_REPO" HEAD >/dev/null 2>&1; then
             ok "Enterprise skills repo accessible"
         else
-            warn "Account '${gh_user:-unknown}' does not have access to: $ENTERPRISE_SKILLS_REPO"
-            msg "  Contact your administrator to get access, then re-run:"
-            msg "    bash $0 --skills-only"
-            msg "  Continuing with MCP and other setup..."
-            SKILLS_AUTH_MODE="skip"
+            # Capture the error to distinguish SAML from actual access denial
+            _repo_check_err=$(GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=$_mccain_key -o IdentitiesOnly=yes" \
+                git ls-remote "$ENTERPRISE_SKILLS_REPO" HEAD 2>&1) || true
+
+            if echo "$_repo_check_err" | grep -qiE "SAML|SSO|single sign.?on|organization has enabled"; then
+                echo ""
+                warn "SAML SSO authorization required for enterprise skills repo"
+                msg "  Your SSH key needs to be authorized for the ${ENTERPRISE_ORG} org."
+                msg "  Opening GitHub SSH keys page in your browser..."
+                if command -v open >/dev/null 2>&1; then
+                    open "https://github.com/settings/keys" 2>/dev/null || true
+                elif command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "https://github.com/settings/keys" 2>/dev/null || true
+                else
+                    msg "  Manually open: https://github.com/settings/keys"
+                fi
+                echo ""
+                msg "  In your browser:"
+                msg "    1. Find your SSH key"
+                msg "    2. Click:  Configure SSO"
+                msg "    3. Click:  Authorize \"${ENTERPRISE_ORG}\""
+                echo ""
+                prompt "Press Enter once you have authorized the key (or to skip)" "" > /dev/null
+                # Re-test after user authorizes
+                if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=$_mccain_key -o IdentitiesOnly=yes" \
+                   git ls-remote --exit-code "$ENTERPRISE_SKILLS_REPO" HEAD >/dev/null 2>&1; then
+                    ok "Enterprise skills repo accessible"
+                else
+                    warn "Still cannot reach skills repo — continuing without skills"
+                    msg "  Re-run with:  bash $0 --skills-only  after authorizing"
+                    SKILLS_AUTH_MODE="skip"
+                fi
+            else
+                warn "Account '${gh_user:-unknown}' does not have access to: $ENTERPRISE_SKILLS_REPO"
+                msg "  Contact your administrator to get access, then re-run:"
+                msg "    bash $0 --skills-only"
+                msg "  Continuing with MCP and other setup..."
+                SKILLS_AUTH_MODE="skip"
+            fi
         fi
     fi
 fi
@@ -621,7 +632,7 @@ fi
 
 if [ "$SKILLS_ONLY" = false ]; then
 
-step "Step 3 of 9 — Databricks Workspace & Profile"
+step "Step 3 of 8 — Databricks Workspace & Profile"
 
 # ── Workspace selection ───────────────────────────────────────────────────────
 items=()
@@ -706,7 +717,7 @@ fi
 # ── STEP 4: AUTHENTICATION + CA CERTIFICATES ─────────────────────────────────
 # =============================================================================
 
-step "Step 4 of 9 — Authentication + CA Certificates"
+step "Step 4 of 8 — Authentication + CA Certificates"
 
 if command -v databricks >/dev/null 2>&1; then
     AUTH_USER=$(databricks current-user me --profile "$PROFILE" --output json 2>/dev/null \
@@ -772,10 +783,9 @@ fi  # end SKILLS_ONLY skip (Steps 3 + 4)
 # ── STEP 5: DATABRICKS MCP ───────────────────────────────────────────────────
 # =============================================================================
 
-step "Step 5 of 9 — Databricks MCP"
-
 # ── MCP server venv ───────────────────────────────────────────────────────────
 if [ "$INSTALL_MCP" = true ]; then
+    step "Step 5 of 8 — Databricks MCP"
     msg "Setting up Databricks MCP server…"
     [ -d "$REPO_DIR/databricks-mcp-server" ] || die "databricks-mcp-server not found in $REPO_DIR"
 
@@ -816,69 +826,13 @@ fi
 
 MCP_CONFIG="$PROJECT_DIR/.mcp.json"
 
-# =============================================================================
-# ── STEP 6: GITHUB MCP ───────────────────────────────────────────────────────
-# =============================================================================
-
 if [ "$SKILLS_ONLY" = false ]; then
 
-step "Step 6 of 9 — GitHub MCP"
-
-# ── Add GitHub entry to .mcp.json ─────────────────────────────────────────────
-python3 -c "
-import json, pathlib
-path = pathlib.Path('$MCP_CONFIG')
-data = json.loads(path.read_text())
-ca = '${NODE_EXTRA_CA_CERTS:-}'
-github_env = {'GITHUB_PERSONAL_ACCESS_TOKEN': None}
-if '$GITHUB_API_URL':
-    github_env['GITHUB_API_URL'] = '$GITHUB_API_URL'
-if ca: github_env['NODE_EXTRA_CA_CERTS'] = ca
-data['mcpServers']['github'] = {
-    'command': 'npx',
-    'args':    ['-y', '@modelcontextprotocol/server-github'],
-    'env':     github_env
-}
-path.write_text(json.dumps(data, indent=2) + '\n')
-"
-
-# ── OAuth via gh CLI ──────────────────────────────────────────────────────────
-msg "Authenticating GitHub MCP via OAuth…"
-if command -v gh >/dev/null 2>&1; then
-    GH_USER=$(gh api user --jq '.login' 2>/dev/null || true)
-    if [ -n "$GH_USER" ]; then
-        ok "GitHub: already authenticated as $GH_USER"
-    else
-        msg "Opening browser for GitHub OAuth login…"
-        # Run login; ignore non-zero exit from "key already in use" — auth may still succeed
-        gh auth login --web --git-protocol ssh 2>&1 || true
-        GH_USER=$(gh api user --jq '.login' 2>/dev/null || true)
-        if [ -z "$GH_USER" ]; then
-            warn "GitHub auth could not be confirmed — token may still work"
-        fi
-    fi
-    GITHUB_TOKEN=$(gh auth token 2>/dev/null || true)
-    if [ -n "$GITHUB_TOKEN" ]; then
-        python3 -c "
-import json, pathlib
-path = pathlib.Path('$MCP_CONFIG')
-data = json.loads(path.read_text())
-data['mcpServers']['github']['env']['GITHUB_PERSONAL_ACCESS_TOKEN'] = '$GITHUB_TOKEN'
-path.write_text(json.dumps(data, indent=2) + '\n')
-"
-        ok "GitHub MCP authenticated as ${GH_USER:-unknown}"
-    else
-        warn "Could not retrieve GitHub token — edit GITHUB_PERSONAL_ACCESS_TOKEN in .mcp.json manually"
-    fi
-else
-    warn "gh CLI unavailable — set GITHUB_PERSONAL_ACCESS_TOKEN manually in .mcp.json"
-fi
-
 # =============================================================================
-# ── STEP 7: ATLASSIAN MCP ────────────────────────────────────────────────────
+# ── STEP 6: ATLASSIAN MCP ────────────────────────────────────────────────────
 # =============================================================================
 
-step "Step 7 of 9 — Atlassian MCP"
+step "Step 6 of 8 — Atlassian MCP"
 
 # ── Add Atlassian entry to .mcp.json ──────────────────────────────────────────
 python3 -c "
@@ -926,13 +880,13 @@ else
     warn "npx not found — Atlassian MCP OAuth skipped. Install Node.js first."
 fi
 
-fi  # end SKILLS_ONLY skip (Steps 6 + 7)
+fi  # end SKILLS_ONLY skip (Step 6 (Atlassian MCP))
 
 # =============================================================================
-# ── STEP 8: SKILLS + SETTINGS ────────────────────────────────────────────────
+# ── STEP 7: SKILLS + SETTINGS ────────────────────────────────────────────────
 # =============================================================================
 
-step "Step 8 of 9 — Skills + Settings"
+step "Step 7 of 8 — Skills + Settings"
 
 # ── Write .claude/settings.json ───────────────────────────────────────────────
 SETTINGS_PATH="$PROJECT_DIR/.claude/settings.json"
@@ -1067,12 +1021,12 @@ if [ "$INSTALL_SKILLS" = true ]; then
 fi
 
 # =============================================================================
-# ── STEP 9: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
+# ── STEP 8: WORKSPACE + VERSION LOCK ─────────────────────────────────────────
 # =============================================================================
 
 if [ "$SKILLS_ONLY" = false ]; then
 
-step "Step 9 of 9 — Workspace + Version Lock"
+step "Step 8 of 8 — Workspace + Version Lock"
 
 # ── .gitignore ────────────────────────────────────────────────────────────────
 GITIGNORE="$PROJECT_DIR/.gitignore"

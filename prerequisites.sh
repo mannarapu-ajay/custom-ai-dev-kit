@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# McCain Enterprise Dev Environment Setup
+# McCain Enterprise Dev Environment — Prerequisites Installer (macOS / Linux)
 #
 # Checks and installs the following prerequisites:
 #   1. Git  — with McCain GitHub authentication, SSH key generation, and SAML SSO
@@ -8,7 +8,7 @@
 #   3. Node.js / npx
 #
 # Usage:
-#   bash setup.sh
+#   bash prerequisites.sh
 #
 
 set -euo pipefail
@@ -17,6 +17,8 @@ set -euo pipefail
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 # =============================================================================
 
+ENTERPRISE_NAME="McCain"
+ENTERPRISE_DISPLAY="McCain"
 ENTERPRISE_ORG="McCainFoods"
 MCCAIN_SSH_KEY="$HOME/.ssh/id_ed25519_mccain"
 
@@ -38,6 +40,23 @@ prompt() {
     read -r result < /dev/tty
     [ -z "$result" ] && echo "$default" || echo "$result"
 }
+
+# =============================================================================
+# ── BANNER ────────────────────────────────────────────────────────────────────
+# =============================================================================
+
+echo ""
+_banner_title="   ${ENTERPRISE_DISPLAY} — Prerequisites Installer"
+_banner_inner=56
+_title_len=${#_banner_title}
+[ "$_title_len" -gt "$_banner_inner" ] && _banner_inner=$(( _title_len + 2 ))
+_border="$(printf '═%.0s' $(seq 1 "$_banner_inner"))"
+_pad=$(( _banner_inner - _title_len ))
+_banner_padded="${_banner_title}$(printf '%*s' "$_pad" '')"
+printf "${CY}╔%s╗${N}\n" "$_border"
+printf "${CY}║${N}%s${CY}║${N}\n" "$_banner_padded"
+printf "${CY}╚%s╝${N}\n" "$_border"
+echo ""
 
 # =============================================================================
 # ── PLATFORM CHECK ────────────────────────────────────────────────────────────
@@ -135,7 +154,7 @@ _configure_git_identity() {
 
     local name email
     name=$(prompt "Full name for git config" "${current_name:-First Last}")
-    email=$(prompt "McCain email for git config (e.g. first.last@mccain.ca)" "${current_email:-yourname@mccain.ca}")
+    email=$(prompt "${ENTERPRISE_DISPLAY} email for git config (e.g. first.last@mccain.ca)" "${current_email:-yourname@mccain.ca}")
 
     git config --global user.name  "$name"
     git config --global user.email "$email"
@@ -158,46 +177,49 @@ _setup_mccain_ssh_key() {
 
     # 1. Generate key (skip if already exists)
     if [ ! -f "$MCCAIN_SSH_KEY" ]; then
-        msg "Generating McCain SSH key (ed25519)..."
+        msg "Generating ${ENTERPRISE_DISPLAY} SSH key (ed25519)..."
         local git_email
         git_email=$(gh api user --jq '.email' 2>/dev/null || git config --global user.email 2>/dev/null || echo "mccain-setup")
         ssh-keygen -t ed25519 -C "$git_email" -f "$MCCAIN_SSH_KEY" -N "" < /dev/tty
         ok "SSH key generated: $MCCAIN_SSH_KEY"
     else
-        ok "Existing McCain SSH key found — reusing  ($MCCAIN_SSH_KEY)"
+        ok "Existing ${ENTERPRISE_DISPLAY} SSH key found — reusing  ($MCCAIN_SSH_KEY)"
     fi
 
-    # 2. Register on GitHub (skip if fingerprint already present)
-    local local_fp
-    local_fp=$(ssh-keygen -lf "${MCCAIN_SSH_KEY}.pub" 2>/dev/null | awk '{print $2}') || true
-    if [ -n "$local_fp" ] && gh ssh-key list 2>/dev/null | grep -q "$local_fp"; then
-        ok "SSH key already registered on GitHub"
-    else
-        local host_label="McCain Enterprise Setup - $(hostname)"
-        msg "Registering SSH key on GitHub..."
-        local add_err=""
-        if gh ssh-key add "${MCCAIN_SSH_KEY}.pub" --title "$host_label" 2>/dev/null; then
-            ok "SSH key registered on GitHub  ($host_label)"
+    # 2. Check if this specific key is already accepted by GitHub via SSH.
+    # This is the most reliable check — no gh API scope required.
+    local already_registered=false
+    local ssh_key_test
+    ssh_key_test=$(ssh -o BatchMode=yes -o ConnectTimeout=5 \
+        -o IdentityFile="$MCCAIN_SSH_KEY" -o IdentitiesOnly=yes \
+        -T git@github.com 2>&1) || true
+    if echo "$ssh_key_test" | grep -q "Hi "; then
+        already_registered=true
+    fi
 
-            echo ""
-            warn "ACTION REQUIRED — SAML SSO authorization"
-            msg "  Opening GitHub SSH keys page in your browser..."
-            if command -v open >/dev/null 2>&1; then
-                open "https://github.com/settings/keys" 2>/dev/null || true
-            elif command -v xdg-open >/dev/null 2>&1; then
-                xdg-open "https://github.com/settings/keys" 2>/dev/null || true
-            else
-                msg "  Manually open: https://github.com/settings/keys"
-            fi
-            echo ""
-            msg "  In your browser:"
-            msg "    1. Find key:  \"$host_label\""
-            msg "    2. Click:     Configure SSO"
-            msg "    3. Click:     Authorize  \"${ENTERPRISE_ORG}\""
-            echo ""
-            msg "  Skip if ${ENTERPRISE_ORG} does not enforce SAML SSO."
-            echo ""
-            prompt "Press Enter once you have authorized the key (or to skip)" "" > /dev/null
+    # If the SSH test failed, ensure gh token has admin:public_key scope before trying to add
+    if [ "$already_registered" = false ]; then
+        if ! gh auth status 2>&1 | grep -q "admin:public_key"; then
+            msg "GitHub token needs SSH key permission — refreshing auth (browser will open)..."
+            gh auth refresh -s admin:public_key < /dev/tty || true
+        fi
+    fi
+
+    # 3. Register on GitHub — treat "already in use" / "already exists" as success
+
+    local sso_needed=false
+    local host_label="${ENTERPRISE_DISPLAY} Prerequisites Setup - $(hostname)"
+
+    if [ "$already_registered" = true ]; then
+        ok "SSH key already registered on GitHub"
+        sso_needed=true
+    else
+        msg "Registering SSH key on GitHub..."
+        local add_err add_exit
+        add_err=$(gh ssh-key add "${MCCAIN_SSH_KEY}.pub" --title "$host_label" 2>&1) && add_exit=0 || add_exit=$?
+        if [ "$add_exit" -eq 0 ] || echo "$add_err" | grep -qiE "already (exists|in use)"; then
+            ok "SSH key registered on GitHub  ($host_label)"
+            sso_needed=true
         else
             warn "Could not auto-register SSH key — add it manually at https://github.com/settings/keys"
             msg "  Public key:"
@@ -205,7 +227,31 @@ _setup_mccain_ssh_key() {
         fi
     fi
 
-    # 3. Update ~/.ssh/config to always use this key for github.com
+    # Show SAML SSO instructions whenever key is on GitHub (new or pre-existing)
+    if [ "$sso_needed" = true ]; then
+        echo ""
+        warn "ACTION REQUIRED — SAML SSO authorization"
+        msg "  Opening GitHub SSH keys page in your browser..."
+        if command -v open >/dev/null 2>&1; then
+            open "https://github.com/settings/keys" 2>/dev/null || true
+        elif command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "https://github.com/settings/keys" 2>/dev/null || true
+        else
+            msg "  Manually open: https://github.com/settings/keys"
+        fi
+        echo ""
+        msg "  In your browser:"
+        msg "    1. Find the key titled:  \"$host_label\""
+        msg "       (or any existing key if already renamed)"
+        msg "    2. Click:  Configure SSO"
+        msg "    3. Click:  Authorize  \"${ENTERPRISE_ORG}\""
+        echo ""
+        msg "  Skip if already authorized or ${ENTERPRISE_ORG} does not enforce SAML SSO."
+        echo ""
+        prompt "Press Enter once you have authorized the key (or to skip)" "" > /dev/null
+    fi
+
+    # 4. Update ~/.ssh/config to always use this key for github.com
     local ssh_config="$HOME/.ssh/config"
     touch "$ssh_config" && chmod 600 "$ssh_config"
     if ! grep -q "Host github.com" "$ssh_config" 2>/dev/null; then
@@ -221,9 +267,9 @@ new = re.sub(r'\nHost github\.com\n(?:[ \t]+[^\n]*\n)*', block, content)
 cfg.write_text(new if new != content else content)
 " 2>/dev/null || true
     fi
-    ok "~/.ssh/config updated to use McCain key for github.com"
+    ok "~/.ssh/config updated to use ${ENTERPRISE_DISPLAY} key for github.com"
 
-    # 4. Load key into ssh-agent for this session
+    # 5. Load key into ssh-agent for this session
     eval "$(ssh-agent -s)" 2>/dev/null || true
     ssh-add "$MCCAIN_SSH_KEY" 2>/dev/null || true
 }
@@ -241,14 +287,25 @@ _authenticate_github() {
 
         # Confirm this is the correct McCain corporate account
         local confirm
-        confirm=$(prompt "Is '${gh_user:-unknown}' your McCain corporate GitHub account? (y/n)" "y")
+        confirm=$(prompt "Is '${gh_user:-unknown}' your ${ENTERPRISE_DISPLAY} corporate GitHub account? (y/n)" "y")
         if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
             _configure_git_identity
             _setup_mccain_ssh_key
+            # Verify SSH works for already-authenticated users too
+            msg "Verifying SSH access..."
+            local verify_out
+            verify_out=$(_ssh_check)
+            if echo "$verify_out" | grep -q "Hi "; then
+                local verify_user
+                verify_user=$(echo "$verify_out" | sed -n 's/.*Hi \([^!]*\)!.*/\1/p')
+                ok "SSH access to github.com confirmed  (authenticated as: ${verify_user:-unknown})"
+            else
+                warn "SSH access could not be verified — key may need SAML SSO authorization above."
+            fi
             return
         fi
 
-        msg "Re-authenticating with your McCain account..."
+        msg "Re-authenticating with your ${ENTERPRISE_DISPLAY} account..."
     else
         msg "Not authenticated with GitHub — opening browser..."
     fi
@@ -331,7 +388,7 @@ fi
 
 echo ""
 echo -e "${CY}════════════════════════════════════════════════════════${N}"
-echo -e "  ${G}${B}Setup complete!${N}"
+echo -e "  ${G}${B}Prerequisites installed successfully!${N}"
 echo -e "${CY}════════════════════════════════════════════════════════${N}"
 echo ""
 echo -e "  ${G}✓${N} Git     $(git --version 2>/dev/null || echo 'see above')"
