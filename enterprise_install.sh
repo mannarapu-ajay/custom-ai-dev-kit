@@ -298,12 +298,12 @@ _banner_title="   ${ENTERPRISE_DISPLAY} — Enterprise AI Dev Kit Installer"
 _banner_inner=56
 _title_len=${#_banner_title}
 [ "$_title_len" -gt "$_banner_inner" ] && _banner_inner=$(( _title_len + 2 ))
-_border_top="${CY}╔$(printf '═%.0s' $(seq 1 $_banner_inner))╗${N}"
-_banner_padded="${_banner_title}$(printf ' %.0s' $(seq $(( _banner_inner - _title_len + 1 )) $_banner_inner))"
-_border_bot="${CY}╚$(printf '═%.0s' $(seq 1 $_banner_inner))╝${N}"
-printf "%b\n" "$_border_top"
-printf "${CY}║${N}%b${CY}║${N}\n" "$_banner_padded"
-printf "%b\n" "$_border_bot"
+_border="$(printf '═%.0s' $(seq 1 "$_banner_inner"))"
+_pad=$(( _banner_inner - _title_len ))
+_banner_padded="${_banner_title}$(printf '%*s' "$_pad" '')"
+printf "${CY}╔%s╗${N}\n" "$_border"
+printf "${CY}║${N}%s${CY}║${N}\n" "$_banner_padded"
+printf "${CY}╚%s╝${N}\n" "$_border"
 echo ""
 warn "NOTE: Do NOT run the official Databricks install.sh alongside this script."
 msg "  This enterprise installer fully replaces it. Running both will break the MCP config."

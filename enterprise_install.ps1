@@ -942,20 +942,33 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         if (-not $env:NODE_EXTRA_CA_CERTS) {
             $env:NODE_EXTRA_CA_CERTS = [System.Environment]::GetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "User")
         }
-        $atlProc = Start-Process -FilePath "cmd.exe" `
-            -ArgumentList "/c", "npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first" `
-            -PassThru -WindowStyle Normal
-        # Wait up to 10 seconds for the OAuth listener to start (poll instead of fixed sleep)
-        $atlWait = 0
-        while ($atlWait -lt 10) {
+        # Run mcp-remote as a PowerShell background job (same session context).
+        # Do NOT use cmd.exe as a wrapper — Node's browser-open (cmd /c start <url>) fails
+        # silently inside a detached cmd subprocess on corporate Windows.
+        # Instead we poll for port 3736, then open the browser explicitly from THIS process
+        # using Start-Process (ShellExecute), which always works on Windows.
+        $atlCaCerts = $env:NODE_EXTRA_CA_CERTS
+        $atlJob = Start-Job -ScriptBlock {
+            if ($using:atlCaCerts) { $env:NODE_EXTRA_CA_CERTS = $using:atlCaCerts }
+            & npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first 2>&1
+        }
+        # Poll for OAuth listener (port 3736) up to 15 seconds
+        $atlWait = 0; $atlConn = $null
+        while ($atlWait -lt 15) {
             Start-Sleep -Seconds 1; $atlWait++
-            try { $conn = Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue } catch { $conn = $null }
-            if ($conn) { break }
+            try { $atlConn = Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue } catch { $atlConn = $null }
+            if ($atlConn) { break }
+        }
+        # Explicitly open the browser from the main PowerShell process (reliable on Windows)
+        if ($atlConn) {
+            Write-Msg "Opening browser for Atlassian authentication..."
+            try { Start-Process "http://localhost:3736" } catch {}
+        } else {
+            Write-Warn "mcp-remote listener did not start — try opening http://localhost:3736 manually"
         }
         Read-Prompt "Press Enter after completing Atlassian authentication in the browser" ""
-        if ($atlProc -and -not $atlProc.HasExited) {
-            try { & taskkill /F /T /PID $atlProc.Id 2>&1 | Out-Null } catch {}
-        }
+        Stop-Job $atlJob -ErrorAction SilentlyContinue
+        Remove-Job $atlJob -Force -ErrorAction SilentlyContinue
         Write-Ok "Atlassian MCP authenticated"
     } else {
         Write-Msg "Skipped — OAuth will prompt automatically on first MCP use."
