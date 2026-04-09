@@ -630,7 +630,8 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
         if (-not $content) { $content = "" }
         # Strip UTF-8 BOM if present (written by PowerShell 5 Set-Content -Encoding UTF8)
         $content = $content.TrimStart([char]0xFEFF)
-        $block = "`nHost github.com`n  IdentityFile $mccainKey`n  IdentitiesOnly yes`n"
+        $mccainKeyFwd = $mccainKey -replace '\\', '/'
+        $block = "`nHost github.com`n  IdentityFile $mccainKeyFwd`n  IdentitiesOnly yes`n"
         if ($content -match '(?m)^Host github\.com') {
             $content = $content -replace '(?ms)(^Host github\.com\r?\n)([ \t]+[^\r\n]*\r?\n)*', $block.TrimStart()
         } else {
@@ -684,7 +685,8 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
 
                 # Re-test SSH with the new McCain key
                 Write-Msg "Re-testing SSH access..."
-                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
+                $_mk = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
                 if ($sshOut -match "Hi ([^!]+)!") {
                     $ghUser = $Matches[1].Trim()
                     Write-Ok "Re-authenticated as: $ghUser"
@@ -710,7 +712,8 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
 
             # Re-test SSH
             Write-Msg "Re-testing SSH access..."
-            try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
+            $_mk = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+            try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
             if ($sshOut -match "Hi ([^!]+)!") {
                 $ghUser = $Matches[1].Trim()
                 Write-Ok "SSH access to github.com verified  (authenticated as: $ghUser)"
