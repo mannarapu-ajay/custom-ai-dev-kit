@@ -683,12 +683,16 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                 # Set up dedicated McCain SSH key for the newly authenticated account
                 Invoke-McCainSshKeySetup
 
-                # Re-test SSH with the new McCain key (use forward slashes — required by ssh on Windows)
+                # Re-test SSH — check exit code (GitHub returns 1 on success, >1 on failure)
                 Write-Msg "Re-testing SSH access..."
                 $_mk = (Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain") -replace '\\', '/'
-                try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
-                if ($sshOut -match "Hi ([^!]+)!") {
-                    $ghUser = $Matches[1].Trim()
+                $prevEap2 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+                $sshRaw = & ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1
+                $sshExit = $LASTEXITCODE
+                $ErrorActionPreference = $prevEap2
+                $sshOut = ($sshRaw | ForEach-Object { "$_" }) -join ' '
+                if ($sshExit -in @(0, 1) -and $sshOut -match "Hi ") {
+                    $ghUser = if ($sshOut -match "Hi ([^!]+)!") { $Matches[1].Trim() } else { "unknown" }
                     Write-Ok "Re-authenticated as: $ghUser"
                     $script:SkillsAuthMode = "ssh"
                 } else {
@@ -710,12 +714,16 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             # Set up dedicated McCain SSH key
             Invoke-McCainSshKeySetup
 
-            # Re-test SSH (use forward slashes — required by ssh on Windows)
+            # Re-test SSH — check exit code (GitHub returns 1 on success, >1 on failure)
             Write-Msg "Re-testing SSH access..."
             $_mk = (Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain") -replace '\\', '/'
-            try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
-            if ($sshOut -match "Hi ([^!]+)!") {
-                $ghUser = $Matches[1].Trim()
+            $prevEap2 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            $sshRaw = & ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1
+            $sshExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap2
+            $sshOut = ($sshRaw | ForEach-Object { "$_" }) -join ' '
+            if ($sshExit -in @(0, 1) -and $sshOut -match "Hi ") {
+                $ghUser = if ($sshOut -match "Hi ([^!]+)!") { $Matches[1].Trim() } else { "unknown" }
                 Write-Ok "SSH access to github.com verified  (authenticated as: $ghUser)"
                 $script:SkillsAuthMode = "ssh"
             } else {
@@ -1009,53 +1017,26 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         Write-Msg "Starting OAuth flow — a browser window will open."
         Write-Msg "Sign in with your Atlassian account, then press Enter here to continue."
         Write-Host ""
-        # Kill any leftover mcp-remote listener on the OAuth callback port (port 3736)
-        # A previous installer run may have left a process holding the port.
-        try { Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } } catch {}
-        # Ensure NODE_EXTRA_CA_CERTS is available to the child process (handles --skills-only runs
-        # where Step 4 was skipped but the value was persisted to the user environment in a prior run)
+        # Ensure NODE_EXTRA_CA_CERTS is set for the child process
         if (-not $env:NODE_EXTRA_CA_CERTS) {
             $env:NODE_EXTRA_CA_CERTS = [System.Environment]::GetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "User")
         }
-        # Run mcp-remote as a PowerShell background job (same session context).
-        # Do NOT use cmd.exe as a wrapper — Node's browser-open (cmd /c start <url>) fails
-        # silently inside a detached cmd subprocess on corporate Windows.
-        # Instead we poll for port 3736, then open the browser explicitly from THIS process
-        # using Start-Process (ShellExecute), which always works on Windows.
-        # Pre-install mcp-remote globally so the background job starts in seconds, not 30-60 s
-        Write-Msg "Installing Atlassian MCP bridge (mcp-remote)..."
-        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        & npm install -g mcp-remote 2>&1 | Out-Null
-        $ErrorActionPreference = $prevEap
-
-        $atlCaCerts = $env:NODE_EXTRA_CA_CERTS
-        $atlPath    = $env:Path
-        $atlJob = Start-Job -ScriptBlock {
-            $env:Path = $using:atlPath
-            if ($using:atlCaCerts) { $env:NODE_EXTRA_CA_CERTS = $using:atlCaCerts }
-            & npx --yes mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first 2>&1
+        # Launch via cmd.exe so npx.cmd resolves correctly on Windows.
+        # mcp-remote opens the browser automatically once it starts.
+        $npxArgs = "npx --yes mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first"
+        $atlassianProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $npxArgs -PassThru -WindowStyle Minimized
+        # Give mcp-remote a moment to start and open the browser
+        Start-Sleep -Seconds 5
+        Read-Prompt "Press Enter after completing Atlassian authentication in the browser" "" | Out-Null
+        if ($atlassianProc -and -not $atlassianProc.HasExited) {
+            try {
+                $atlassianProc | Stop-Process -Force -ErrorAction SilentlyContinue
+                Get-Process -Name "node" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.StartTime -ge $atlassianProc.StartTime } |
+                    Stop-Process -Force -ErrorAction SilentlyContinue
+            } catch {}
         }
-        # Poll for OAuth listener (port 3736) — should start within a few seconds now
-        Write-Msg "Starting OAuth flow..."
-        $atlWait = 0; $atlConn = $null
-        while ($atlWait -lt 60) {
-            Start-Sleep -Seconds 1; $atlWait++
-            try { $atlConn = Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue } catch { $atlConn = $null }
-            if ($atlConn) { break }
-        }
-        # Explicitly open the browser from the main PowerShell process (reliable on Windows)
-        if ($atlConn) {
-            Write-Msg "Opening browser for Atlassian authentication..."
-            try { Start-Process "http://localhost:3736" } catch {}
-            Read-Prompt "Press Enter after completing Atlassian authentication in the browser" "" | Out-Null
-            Write-Ok "Atlassian MCP authenticated"
-        } else {
-            Write-Warn "mcp-remote did not start in time — Atlassian auth will happen automatically"
-            Write-Msg  "  the first time you use a Confluence or Jira tool in Claude Code."
-            Write-Ok  "Atlassian MCP configured"
-        }
-        Stop-Job $atlJob -ErrorAction SilentlyContinue
-        Remove-Job $atlJob -Force -ErrorAction SilentlyContinue
+        Write-Ok "Atlassian MCP authenticated"
     } else {
         Write-Msg "Skipped — OAuth will prompt automatically on first MCP use."
         Write-Ok "Atlassian MCP configured"
