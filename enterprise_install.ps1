@@ -683,9 +683,9 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                 # Set up dedicated McCain SSH key for the newly authenticated account
                 Invoke-McCainSshKeySetup
 
-                # Re-test SSH with the new McCain key
+                # Re-test SSH with the new McCain key (use forward slashes — required by ssh on Windows)
                 Write-Msg "Re-testing SSH access..."
-                $_mk = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+                $_mk = (Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain") -replace '\\', '/'
                 try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
                 if ($sshOut -match "Hi ([^!]+)!") {
                     $ghUser = $Matches[1].Trim()
@@ -710,9 +710,9 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             # Set up dedicated McCain SSH key
             Invoke-McCainSshKeySetup
 
-            # Re-test SSH
+            # Re-test SSH (use forward slashes — required by ssh on Windows)
             Write-Msg "Re-testing SSH access..."
-            $_mk = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
+            $_mk = (Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain") -replace '\\', '/'
             try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -o "IdentityFile=$_mk" -o IdentitiesOnly=yes -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
             if ($sshOut -match "Hi ([^!]+)!") {
                 $ghUser = $Matches[1].Trim()
@@ -1022,14 +1022,23 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         # silently inside a detached cmd subprocess on corporate Windows.
         # Instead we poll for port 3736, then open the browser explicitly from THIS process
         # using Start-Process (ShellExecute), which always works on Windows.
+        # Pre-install mcp-remote globally so the background job starts in seconds, not 30-60 s
+        Write-Msg "Installing Atlassian MCP bridge (mcp-remote)..."
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        & npm install -g mcp-remote 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEap
+
         $atlCaCerts = $env:NODE_EXTRA_CA_CERTS
+        $atlPath    = $env:Path
         $atlJob = Start-Job -ScriptBlock {
+            $env:Path = $using:atlPath
             if ($using:atlCaCerts) { $env:NODE_EXTRA_CA_CERTS = $using:atlCaCerts }
-            & npx mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first 2>&1
+            & npx --yes mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first 2>&1
         }
-        # Poll for OAuth listener (port 3736) up to 15 seconds
+        # Poll for OAuth listener (port 3736) — should start within a few seconds now
+        Write-Msg "Starting OAuth flow..."
         $atlWait = 0; $atlConn = $null
-        while ($atlWait -lt 15) {
+        while ($atlWait -lt 60) {
             Start-Sleep -Seconds 1; $atlWait++
             try { $atlConn = Get-NetTCPConnection -LocalPort 3736 -ErrorAction SilentlyContinue } catch { $atlConn = $null }
             if ($atlConn) { break }
@@ -1038,13 +1047,15 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
         if ($atlConn) {
             Write-Msg "Opening browser for Atlassian authentication..."
             try { Start-Process "http://localhost:3736" } catch {}
+            Read-Prompt "Press Enter after completing Atlassian authentication in the browser" "" | Out-Null
+            Write-Ok "Atlassian MCP authenticated"
         } else {
-            Write-Warn "mcp-remote listener did not start — try opening http://localhost:3736 manually"
+            Write-Warn "mcp-remote did not start in time — Atlassian auth will happen automatically"
+            Write-Msg  "  the first time you use a Confluence or Jira tool in Claude Code."
+            Write-Ok  "Atlassian MCP configured"
         }
-        Read-Prompt "Press Enter after completing Atlassian authentication in the browser" ""
         Stop-Job $atlJob -ErrorAction SilentlyContinue
         Remove-Job $atlJob -Force -ErrorAction SilentlyContinue
-        Write-Ok "Atlassian MCP authenticated"
     } else {
         Write-Msg "Skipped — OAuth will prompt automatically on first MCP use."
         Write-Ok "Atlassian MCP configured"
