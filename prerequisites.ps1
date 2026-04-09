@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     McCain Enterprise Dev Environment — Prerequisites Installer (Windows)
