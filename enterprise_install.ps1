@@ -2,14 +2,13 @@
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
-#   .\enterprise_install.ps1
-#   .\enterprise_install.ps1 -Profile DEFAULT -Force
-#   .\enterprise_install.ps1 -SkillsOnly
-#   .\enterprise_install.ps1 -Global
+#   irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex
+#   irm URL | iex  (then pass flags via env vars below)
 #
-# Environment overrides:
-#   $env:DEVKIT_PROFILE = "NAME"
-#   $env:DEVKIT_FORCE   = "true"
+# Environment overrides (set before running):
+#   $env:DEVKIT_PROFILE      = "NAME"
+#   $env:DEVKIT_FORCE        = "true"
+#   $env:DEVKIT_SKILLS_ONLY  = "true"
 #
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +40,10 @@ $EnterpriseSkillsRepoSubpath = "mccain-data-architecture-skills"
 # Or set an absolute path to any directory that contains skill sub-folders.
 $EnterpriseSkillsPath = ""
 
+# GitHub URL for this enterprise installer repo — used for self-clone/update.
+$EnterpriseKitRepo   = "https://github.com/mannarapu-ajay/custom-ai-dev-kit.git"
+$EnterpriseKitBranch = "main"
+
 # Databricks workspace catalog - add or remove entries as domains change.
 $WorkspaceNames = @(
     "Growth", "Supply Chain", "Finance", "Agriculture",
@@ -61,47 +64,52 @@ $WorkspaceUrls = @(
 # -- PATHS  (derived - do not edit) -------------------------------------------
 # =============================================================================
 
-$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $InstallDir  = if ($env:AIDEVKIT_HOME) { $env:AIDEVKIT_HOME } else { Join-Path $env:USERPROFILE ".ai-dev-kit" }
+
+# Re-run command shown in error messages — derived from kit repo URL so it stays in sync
+$_rawBase   = $EnterpriseKitRepo -replace '\.git$','' -replace 'github\.com','raw.githubusercontent.com'
+$_rerunCmd  = "`$env:DEVKIT_SKILLS_ONLY='true'; irm ${_rawBase}/${EnterpriseKitBranch}/enterprise_install.ps1 | iex"
+
+# Detect whether running from a local clone or via irm | iex
+$_localRepo = $null
+if ($MyInvocation.MyCommand.Path) {
+    $_thisDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    if ((Test-Path (Join-Path $_thisDir "databricks-mcp-server")) -and
+        (Test-Path (Join-Path $_thisDir "databricks-tools-core"))) {
+        $_localRepo = $_thisDir
+    }
+}
+
+if ($_localRepo) {
+    $RepoDir        = $_localRepo
+    $_localRepoMode = $true
+} else {
+    $RepoDir        = Join-Path $InstallDir "repo"
+    $_localRepoMode = $false
+}
+
 $VenvDir     = Join-Path $InstallDir ".venv"
 $VenvPython  = Join-Path $VenvDir "Scripts\python.exe"
-$McpEntry    = Join-Path $ScriptDir "databricks-mcp-server\run_server.py"
+$McpEntry    = Join-Path $RepoDir "databricks-mcp-server\run_server.py"
 
-$EntSkillsLocal   = Join-Path $ScriptDir "enterprise_skills"
+$EntSkillsLocal   = Join-Path $RepoDir "enterprise_skills"
 $EntSkillsRepoDir = Join-Path $InstallDir "$EnterpriseName-skills-repo"
-$UpdateCheckCmd   = "powershell -File `"$(Join-Path $ScriptDir '.claude-plugin\check_update.ps1')`""
+$UpdateCheckCmd   = "powershell -File `"$(Join-Path $RepoDir '.claude-plugin\check_update.ps1')`""
 $StateSubdir      = ".$EnterpriseName-adk"
-
-# Early sanity check - confirm this is the correct repo directory
-if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server")) -or
-    -not (Test-Path (Join-Path $ScriptDir "databricks-tools-core"))) {
-    Write-Host ""
-    Write-Host "  x Could not locate the custom-ai-dev-kit repo at: $ScriptDir" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Do NOT copy this script - run it directly using its full path from any directory:"
-    Write-Host ""
-    Write-Host "    powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1"
-    Write-Host ""
-    Write-Host "  You can run this from inside your project directory, e.g.:"
-    Write-Host "    cd C:\my-project"
-    Write-Host "    powershell -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1"
-    Write-Host ""
-    exit 1
-}
 
 # =============================================================================
 # -- DEFAULTS  (overridable by flags / env vars) -------------------------------
 # =============================================================================
 
-$script:Profile_        = if ($env:DEVKIT_PROFILE) { $env:DEVKIT_PROFILE } else { "DEFAULT" }
-$script:Scope           = if ($env:DEVKIT_SCOPE)   { $env:DEVKIT_SCOPE }   else { "project" }
-$script:Force           = $env:DEVKIT_FORCE -eq "true"
-$script:InstallMcp      = $true
-$script:InstallSkills   = $true
-$script:SkillsOnly      = $false
-$script:SkillsProfile   = ""
-$script:Silent          = $false
-$script:ProfileProvided = $false
+$script:Profile_        = if ($env:DEVKIT_PROFILE)       { $env:DEVKIT_PROFILE }       else { "DEFAULT" }
+$script:Scope           = if ($env:DEVKIT_SCOPE)         { $env:DEVKIT_SCOPE }         else { "project" }
+$script:Force           = $env:DEVKIT_FORCE        -eq "true"
+$script:InstallMcp      = $env:DEVKIT_SKILLS_ONLY  -ne "true"
+$script:InstallSkills   = $env:DEVKIT_MCP_ONLY     -ne "true"
+$script:SkillsOnly      = $env:DEVKIT_SKILLS_ONLY  -eq "true"
+$script:SkillsProfile   = if ($env:DEVKIT_SKILLS_PROFILE) { $env:DEVKIT_SKILLS_PROFILE } else { "" }
+$script:Silent          = $env:DEVKIT_SILENT       -eq "true"
+$script:ProfileProvided = [bool]$env:DEVKIT_PROFILE
 $script:ProjectDir      = ""
 $script:WorkspaceUrl    = ""
 $script:SkillsAuthMode  = "ssh"   # overridden in Step 2 if SSH is not set up
@@ -364,6 +372,48 @@ Write-Msg  "  This enterprise installer fully replaces it. Running both will bre
 Write-Host ""
 
 # =============================================================================
+# -- REPO SETUP ---------------------------------------------------------------
+# =============================================================================
+
+if ($_localRepoMode) {
+    Write-Ok "Using local repo  ->  $RepoDir"
+} else {
+    # Running via irm | iex — git must be present (prerequisites.ps1 installs it)
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "  x git not found - run prerequisites first:" -ForegroundColor Red
+        Write-Host "    irm ${_rawBase}/${EnterpriseKitBranch}/prerequisites.ps1 | iex"
+        Write-Host ""
+        exit 1
+    }
+    Write-Msg "Checking enterprise kit repo..."
+    if (Test-Path (Join-Path $RepoDir ".git")) {
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        & git -C $RepoDir fetch -q --depth 1 origin $EnterpriseKitBranch 2>&1 | Out-Null
+        & git -C $RepoDir reset -q --hard FETCH_HEAD 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEap
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Enterprise kit updated  ->  $RepoDir"
+        } else {
+            Write-Warn "Could not update enterprise kit — using existing version"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        & git clone -q --depth 1 --branch $EnterpriseKitBranch $EnterpriseKitRepo $RepoDir 2>&1 | Out-Null
+        $cloneExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($cloneExit -eq 0) {
+            Write-Ok "Enterprise kit ready  ->  $RepoDir"
+        } else {
+            Write-Host "  x Failed to clone enterprise kit from: $EnterpriseKitRepo" -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+Write-Host ""
+
+# =============================================================================
 # -- STEP 1: PROJECT DIRECTORY ------------------------------------------------
 # =============================================================================
 
@@ -403,7 +453,7 @@ Write-Ok "Workspace directories created"
 Write-Step "Step 2 of 8 — Prerequisites"
 
 # ── git is always needed (clones skills repo even in --skills-only mode) ──────
-$_prereqScript = Join-Path $ScriptDir "prerequisites.ps1"
+$_prereqScript = Join-Path $RepoDir "prerequisites.ps1"
 if (Get-Command git -ErrorAction SilentlyContinue) {
     Write-Ok "$(& git --version 2>&1)"
 } else {
@@ -624,7 +674,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             }
         } else {
             Write-Msg "Skipped — enterprise skills will not be installed"
-            Write-Msg "Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after setting up GitHub authentication"
+            Write-Msg "Re-run with:  $_rerunCmd  after setting up GitHub authentication"
             $script:SkillsAuthMode = "skip"
         }
     }
@@ -679,13 +729,13 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                     Write-Ok "Enterprise skills repo accessible"
                 } else {
                     Write-Warn "Still cannot reach skills repo — continuing without skills"
-                    Write-Msg  "  Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after authorizing"
+                    Write-Msg  "  Re-run with:  $_rerunCmd  after authorizing"
                     $script:SkillsAuthMode = "skip"
                 }
             } else {
                 Write-Warn "Account '$($ghUser ?? 'unknown')' does not have access to: $EnterpriseSkillsRepo"
                 Write-Msg  "  Contact your administrator to get access, then re-run:"
-                Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+                Write-Msg  "    $_rerunCmd"
                 Write-Msg  "  Continuing with MCP and other setup..."
                 $script:SkillsAuthMode = "skip"
             }
@@ -837,7 +887,7 @@ $McpConfig = Join-Path $script:ProjectDir ".mcp.json"
 if ($script:InstallMcp) {
     Write-Step "Step 5 of 8 — Databricks MCP"
     Write-Msg "Setting up Databricks MCP server..."
-    if (-not (Test-Path (Join-Path $ScriptDir "databricks-mcp-server"))) { Write-Die "databricks-mcp-server not found in $ScriptDir" }
+    if (-not (Test-Path (Join-Path $RepoDir "databricks-mcp-server"))) { Write-Die "databricks-mcp-server not found in $RepoDir" }
 
     # Always reinstall from this repo - ensures venv uses custom-ai-dev-kit packages,
     # not stale ones from a previous official install run.
@@ -847,8 +897,8 @@ if ($script:InstallMcp) {
     Write-Msg "Installing Python dependencies..."
     # --native-tls: use system certificate store (required behind corporate TLS-intercepting proxies)
     & uv pip install --python $VenvPython --native-tls `
-        -e (Join-Path $ScriptDir "databricks-tools-core") `
-        -e (Join-Path $ScriptDir "databricks-mcp-server") --quiet
+        -e (Join-Path $RepoDir "databricks-tools-core") `
+        -e (Join-Path $RepoDir "databricks-mcp-server") --quiet
     & $VenvPython -c "import databricks_mcp_server" 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Die "MCP server import failed after install." }
     Write-Ok "MCP server ready  ->  $VenvDir"
@@ -995,7 +1045,7 @@ if ($script:InstallSkills) {
     New-Item -ItemType Directory -Path $skillsDest -Force -ErrorAction SilentlyContinue | Out-Null
 
     # Databricks skills - from this repo
-    $dbSkillsDir = Join-Path $ScriptDir "databricks-skills"
+    $dbSkillsDir = Join-Path $RepoDir "databricks-skills"
     if (Test-Path $dbSkillsDir) {
         Get-ChildItem -Path $dbSkillsDir -Directory | Where-Object { $_.Name -ne "TEMPLATE" } | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination (Join-Path $skillsDest $_.Name) -Recurse -Force
@@ -1014,15 +1064,15 @@ if ($script:InstallSkills) {
             Write-Warn "Access denied to enterprise skills repo"
             Write-Msg  "  Your GitHub account does not have access to: $EnterpriseSkillsRepo"
             Write-Msg  "  Please ask your administrator to grant you access, then re-run:"
-            Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+            Write-Msg  "    $_rerunCmd"
         } elseif ($Err -match "permission denied.*publickey|could not read username|authentication failed") {
             Write-Warn "Authentication failed when cloning enterprise skills repo"
             Write-Msg  "  Re-run the installer to set up GitHub authentication again, or:"
-            Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
+            Write-Msg  "    $_rerunCmd"
         } else {
             Write-Warn "Failed to clone enterprise skills repo"
             if ($Err) { Write-Msg "  Error: $Err" }
-            Write-Msg  "  Re-run with -SkillsOnly after resolving the issue"
+            Write-Msg  "  Re-run with:  $_rerunCmd  after resolving the issue"
         }
     }
 
@@ -1031,7 +1081,7 @@ if ($script:InstallSkills) {
             Write-Warn "EnterpriseSkillsMode=git but EnterpriseSkillsRepo is empty — skipping"
         } elseif ($script:SkillsAuthMode -eq "skip") {
             Write-Warn "Enterprise skills skipped — GitHub authentication not set up"
-            Write-Msg  "  Re-run with:  .\enterprise_install.ps1 -SkillsOnly  after setting up authentication"
+            Write-Msg  "  Re-run with:  $_rerunCmd  after setting up authentication"
         } else {
             # Pick clone URL based on auth mode set in Step 2
             $skillsCloneUrl = if ($script:SkillsAuthMode -eq "https") { $script:HttpsSkillsRepo } else { $EnterpriseSkillsRepo }
@@ -1184,7 +1234,7 @@ $lock = [ordered]@{
 Write-Ok "$StateSubdir/metadata.json"
 Write-Ok "$StateSubdir/version.lock"
 
-} # end SkillsOnly skip (Step 9)
+} # end SkillsOnly skip (Step 8)
 
 # =============================================================================
 # -- SUMMARY ------------------------------------------------------------------

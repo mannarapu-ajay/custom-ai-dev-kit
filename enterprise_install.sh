@@ -7,15 +7,15 @@
 # compute configuration, and enterprise skills pulled from a private repo.
 #
 # Usage:
-#   bash enterprise_install.sh                 # interactive
-#   bash enterprise_install.sh --profile NAME  # skip profile prompt
-#   bash enterprise_install.sh --force         # force reinstall
-#   bash enterprise_install.sh --skills-only   # skip MCP server setup
-#   bash enterprise_install.sh --global        # install globally (not per-project)
+#   bash <(curl -sL https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.sh)
+#   bash <(curl -sL URL) --profile NAME    # skip profile prompt
+#   bash <(curl -sL URL) --force           # force reinstall
+#   bash <(curl -sL URL) --skills-only     # update skills only
+#   bash <(curl -sL URL) --global          # install globally (not per-project)
 #
 # Environment overrides (alternative to flags):
-#   DEVKIT_PROFILE=NAME   bash enterprise_install.sh
-#   DEVKIT_FORCE=true     bash enterprise_install.sh
+#   DEVKIT_PROFILE=NAME   bash <(curl -sL URL)
+#   DEVKIT_FORCE=true     bash <(curl -sL URL)
 #
 
 set -e
@@ -47,6 +47,10 @@ ENTERPRISE_SKILLS_REPO_SUBPATH="mccain-data-architecture-skills"
 # Or set an absolute path to any directory that contains skill sub-folders.
 ENTERPRISE_SKILLS_PATH=""
 
+# GitHub URL for this enterprise installer repo — used for self-clone/update.
+ENTERPRISE_KIT_REPO="https://github.com/mannarapu-ajay/custom-ai-dev-kit.git"
+ENTERPRISE_KIT_BRANCH="main"
+
 # Databricks workspace catalog — add or remove entries as domains change.
 WORKSPACE_NAMES=(
     "Growth"
@@ -73,26 +77,32 @@ WORKSPACE_URLS=(
 # ── PATHS  (derived — do not edit) ───────────────────────────────────────────
 # =============================================================================
 
-# Script's own directory is always the repo root (cloned fork).
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="${AIDEVKIT_HOME:-$HOME/.ai-dev-kit}"
 
-# Early sanity check — confirm this is the correct repo directory
-if [ ! -d "$REPO_DIR/databricks-mcp-server" ] || [ ! -d "$REPO_DIR/databricks-tools-core" ]; then
-    echo ""
-    echo "  ✗ Could not locate the custom-ai-dev-kit repo at: $REPO_DIR" >&2
-    echo "" >&2
-    echo "  Do NOT copy this script — run it directly using its full path from any directory:" >&2
-    echo "" >&2
-    echo "    bash /path/to/custom-ai-dev-kit/enterprise_install.sh" >&2
-    echo "" >&2
-    echo "  You can run this from inside your project directory, e.g.:" >&2
-    echo "    cd ~/my-project" >&2
-    echo "    bash /path/to/custom-ai-dev-kit/enterprise_install.sh" >&2
-    echo "" >&2
-    exit 1
+# Re-run command shown in error messages — derived from kit repo URL so it stays in sync
+_raw_base="${ENTERPRISE_KIT_REPO%.git}"
+_raw_base="${_raw_base/github.com/raw.githubusercontent.com}"
+_RERUN_CMD="bash <(curl -sL ${_raw_base}/${ENTERPRISE_KIT_BRANCH}/enterprise_install.sh)"
+
+# Detect whether running from a local clone or via curl/pipe
+_local_repo=""
+if [ -f "$0" ] 2>/dev/null; then
+    _maybe_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || true
+    if [ -n "$_maybe_dir" ] \
+       && [ -d "$_maybe_dir/databricks-mcp-server" ] \
+       && [ -d "$_maybe_dir/databricks-tools-core" ]; then
+        _local_repo="$_maybe_dir"
+    fi
 fi
 
-INSTALL_DIR="${AIDEVKIT_HOME:-$HOME/.ai-dev-kit}"
+if [ -n "$_local_repo" ]; then
+    REPO_DIR="$_local_repo"
+    _LOCAL_REPO_MODE=true
+else
+    REPO_DIR="$INSTALL_DIR/repo"
+    _LOCAL_REPO_MODE=false
+fi
+
 VENV_DIR="$INSTALL_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 MCP_ENTRY="$REPO_DIR/databricks-mcp-server/run_server.py"
@@ -305,6 +315,37 @@ msg "  This enterprise installer fully replaces it. Running both will break the 
 echo ""
 
 # =============================================================================
+# ── REPO SETUP ────────────────────────────────────────────────────────────────
+# =============================================================================
+
+if [ "$_LOCAL_REPO_MODE" = true ]; then
+    ok "Using local repo  →  $REPO_DIR"
+else
+    # Running via curl — git must be present (prerequisites.sh installs it)
+    if ! command -v git >/dev/null 2>&1; then
+        echo "" >&2
+        echo "  ✗ git not found — run prerequisites first:" >&2
+        echo "    bash <(curl -sL ${_raw_base}/${ENTERPRISE_KIT_BRANCH}/prerequisites.sh)" >&2
+        echo "" >&2
+        exit 1
+    fi
+    msg "Checking enterprise kit repo…"
+    if [ -d "$REPO_DIR/.git" ]; then
+        git -C "$REPO_DIR" fetch -q --depth 1 origin "$ENTERPRISE_KIT_BRANCH" 2>/dev/null \
+            && git -C "$REPO_DIR" reset -q --hard FETCH_HEAD \
+            && ok "Enterprise kit updated  →  $REPO_DIR" \
+            || warn "Could not update enterprise kit — using existing version"
+    else
+        mkdir -p "$INSTALL_DIR"
+        git clone -q --depth 1 --branch "$ENTERPRISE_KIT_BRANCH" \
+            "$ENTERPRISE_KIT_REPO" "$REPO_DIR" \
+            && ok "Enterprise kit ready  →  $REPO_DIR" \
+            || { echo "  ✗ Failed to clone enterprise kit from: $ENTERPRISE_KIT_REPO" >&2; exit 1; }
+    fi
+fi
+echo ""
+
+# =============================================================================
 # ── STEP 1: PROJECT DIRECTORY ─────────────────────────────────────────────────
 # =============================================================================
 
@@ -343,7 +384,7 @@ ok "Workspace directories created"
 step "Step 2 of 8 — Prerequisites"
 
 # ── git is always needed (clones skills repo even in --skills-only mode) ──────
-_PREREQ_SCRIPT="$(dirname "$0")/prerequisites.sh"
+_PREREQ_SCRIPT="$REPO_DIR/prerequisites.sh"
 if command -v git >/dev/null 2>&1; then
     ok "$(git --version)"
 else
@@ -567,7 +608,7 @@ cfg.write_text(new_content)
             fi
         else
             msg "Skipped — enterprise skills will not be installed"
-            msg "Re-run with:  bash $0 --skills-only  after setting up GitHub authentication"
+            msg "Re-run with:  $_RERUN_CMD --skills-only  after setting up GitHub authentication"
             SKILLS_AUTH_MODE="skip"
         fi
     fi
@@ -612,13 +653,13 @@ cfg.write_text(new_content)
                     ok "Enterprise skills repo accessible"
                 else
                     warn "Still cannot reach skills repo — continuing without skills"
-                    msg "  Re-run with:  bash $0 --skills-only  after authorizing"
+                    msg "  Re-run with:  $_RERUN_CMD --skills-only  after authorizing"
                     SKILLS_AUTH_MODE="skip"
                 fi
             else
                 warn "Account '${gh_user:-unknown}' does not have access to: $ENTERPRISE_SKILLS_REPO"
                 msg "  Contact your administrator to get access, then re-run:"
-                msg "    bash $0 --skills-only"
+                msg "    $_RERUN_CMD --skills-only"
                 msg "  Continuing with MCP and other setup..."
                 SKILLS_AUTH_MODE="skip"
             fi
@@ -938,15 +979,15 @@ if [ "$INSTALL_SKILLS" = true ]; then
             warn "Access denied to enterprise skills repo"
             msg "  Your GitHub account does not have access to: $ENTERPRISE_SKILLS_REPO"
             msg "  Please ask your administrator to grant you access, then re-run:"
-            msg "    bash $0 --skills-only"
+            msg "    $_RERUN_CMD --skills-only"
         elif echo "$err" | grep -qiE "permission denied.*publickey|could not read username|authentication failed"; then
             warn "Authentication failed when cloning enterprise skills repo"
             msg "  Re-run the installer to set up GitHub authentication again, or:"
-            msg "    bash $0 --skills-only"
+            msg "    $_RERUN_CMD --skills-only"
         else
             warn "Failed to clone enterprise skills repo"
             [ -n "$err" ] && msg "  Error: $err"
-            msg "  Re-run with --skills-only after resolving the issue"
+            msg "  Re-run with:  $_RERUN_CMD --skills-only  after resolving the issue"
         fi
     }
 
@@ -956,7 +997,7 @@ if [ "$INSTALL_SKILLS" = true ]; then
             warn "ENTERPRISE_SKILLS_MODE=git but ENTERPRISE_SKILLS_REPO is empty — skipping"
         elif [ "$SKILLS_AUTH_MODE" = "skip" ]; then
             warn "Enterprise skills skipped — GitHub authentication not set up"
-            msg "  Re-run with:  bash $0 --skills-only  after setting up authentication"
+            msg "  Re-run with:  $_RERUN_CMD --skills-only  after setting up authentication"
         else
             # Pick clone URL based on auth mode set in Step 2
             SKILLS_CLONE_URL="$ENTERPRISE_SKILLS_REPO"
@@ -1116,7 +1157,7 @@ lock = {
 ok "$STATE_SUBDIR/metadata.json"
 ok "$STATE_SUBDIR/version.lock"
 
-fi  # end SKILLS_ONLY skip (Step 9)
+fi  # end SKILLS_ONLY skip (Step 8)
 
 # =============================================================================
 # ── SUMMARY ───────────────────────────────────────────────────────────────────
