@@ -360,7 +360,8 @@ function Setup-McCainSSHKey {
     $configContent = Get-Content $sshConfig -Raw -ErrorAction SilentlyContinue
     if ([string]::IsNullOrWhiteSpace($configContent)) { $configContent = "" }
 
-    $newBlock = "`nHost github.com`n  IdentityFile $MCCAIN_SSH_KEY`n  IdentitiesOnly yes`n"
+    $mccainKeyFwd = $MCCAIN_SSH_KEY -replace '\\', '/'
+    $newBlock = "`nHost github.com`n  IdentityFile $mccainKeyFwd`n  IdentitiesOnly yes`n"
 
     if ($configContent -notmatch "Host github\.com") {
         Add-Content -Path $sshConfig -Value $newBlock
@@ -395,7 +396,11 @@ function Authenticate-GitHub {
             Setup-McCainSSHKey
             # Verify SSH works for already-authenticated users too
             msg "Verifying SSH access..."
-            $verifyOut = Check-SSHGitHub
+            $verifyOut = Invoke-Native {
+                ssh -o BatchMode=yes -o ConnectTimeout=5 `
+                    -o "IdentityFile=$MCCAIN_SSH_KEY" -o IdentitiesOnly=yes `
+                    -T git@github.com
+            }
             if ($verifyOut -match "Hi (\S+)!") {
                 ok "SSH access to github.com confirmed  (authenticated as: $($Matches[1]))"
             } else {
@@ -419,7 +424,11 @@ function Authenticate-GitHub {
 
     # Verify SSH after setup
     msg "Verifying SSH access..."
-    $sshOut = Check-SSHGitHub
+    $sshOut = Invoke-Native {
+        ssh -o BatchMode=yes -o ConnectTimeout=5 `
+            -o "IdentityFile=$MCCAIN_SSH_KEY" -o IdentitiesOnly=yes `
+            -T git@github.com
+    }
     if ($sshOut -match "Hi (\S+)!") {
         $ghUser = $Matches[1]
         ok "SSH access to github.com confirmed  (authenticated as: $ghUser)"
@@ -427,7 +436,7 @@ function Authenticate-GitHub {
         warn "SSH access could not be verified -- you may need to add the key manually."
         $pubKeyPath = "${MCCAIN_SSH_KEY}.pub"
         $pubKey = if (Test-Path $pubKeyPath) { Get-Content $pubKeyPath -Raw } else { "Key not found" }
-        msg "  Public key: $pubKey"
+        msg "  Public key: $($pubKey.Trim())"
         msg "  Go to: https://github.com/settings/keys"
     }
 }
