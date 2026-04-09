@@ -569,6 +569,24 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
         } catch {}
     }
 
+    # ── Ensure GitHub host key is in known_hosts (required for BatchMode=yes) ───
+    $knownHostsPath = Join-Path $env:USERPROFILE ".ssh\known_hosts"
+    New-Item -ItemType Directory -Path (Split-Path $knownHostsPath) -Force -ErrorAction SilentlyContinue | Out-Null
+    $knownHostsContent = if (Test-Path $knownHostsPath) { Get-Content $knownHostsPath -Raw -ErrorAction SilentlyContinue } else { "" }
+    if ($knownHostsContent -notmatch "github\.com") {
+        Write-Msg "Adding GitHub host key to known_hosts..."
+        try {
+            $ghKeys = & ssh-keyscan -H github.com 2>$null
+            if ($ghKeys) {
+                $ghKeysText = ($ghKeys -join "`n") + "`n"
+                [System.IO.File]::AppendAllText($knownHostsPath, $ghKeysText, [System.Text.UTF8Encoding]::new($false))
+                Write-Ok "GitHub host key added to known_hosts"
+            }
+        } catch {
+            Write-Warn "Could not add GitHub host key automatically — SSH may fail"
+        }
+    }
+
     # ── Check current SSH session ─────────────────────────────────────────────
     try { $sshOut = (& ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1) | Out-String } catch { $sshOut = "" }
     if ($sshOut -match "Hi ") {
@@ -637,7 +655,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
     if ($script:SkillsAuthMode -ne "skip") {
         Write-Msg "Checking access to enterprise skills repo..."
         $_mccainKey = Join-Path $env:USERPROFILE ".ssh\id_ed25519_mccain"
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
         $_repoCheckErr = ""
         try {
             & git ls-remote --exit-code $EnterpriseSkillsRepo HEAD 2>&1 | Out-Null
@@ -651,7 +669,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
             Write-Ok "Enterprise skills repo accessible"
         } else {
             # Re-run capturing stderr to detect SAML/SSO errors
-            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
             $_repoCheckErr = (& git ls-remote $EnterpriseSkillsRepo HEAD 2>&1) -join "`n"
             $env:GIT_SSH_COMMAND = $null
 
@@ -669,7 +687,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                 Write-Host ""
                 Read-Host "  Press Enter once you have authorized the key (or to skip)"
                 # Re-test after user authorizes
-                $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
+                $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o IdentityFile=`"$_mccainKey`" -o IdentitiesOnly=yes"
                 try {
                     & git ls-remote --exit-code $EnterpriseSkillsRepo HEAD 2>&1 | Out-Null
                     $_repoOk2 = ($LASTEXITCODE -eq 0)
