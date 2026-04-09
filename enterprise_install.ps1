@@ -551,13 +551,15 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
         if (-not (Test-Path $sshConfig)) { New-Item -ItemType File -Path $sshConfig -Force | Out-Null }
         $content = Get-Content $sshConfig -Raw -ErrorAction SilentlyContinue
         if (-not $content) { $content = "" }
+        # Strip UTF-8 BOM if present (written by PowerShell 5 Set-Content -Encoding UTF8)
+        $content = $content.TrimStart([char]0xFEFF)
         $block = "`nHost github.com`n  IdentityFile $mccainKey`n  IdentitiesOnly yes`n"
         if ($content -match '(?m)^Host github\.com') {
             $content = $content -replace '(?ms)(^Host github\.com\r?\n)([ \t]+[^\r\n]*\r?\n)*', $block.TrimStart()
         } else {
             $content = $content.TrimEnd() + $block
         }
-        Set-Content $sshConfig -Value $content -Encoding UTF8 -NoNewline
+        [System.IO.File]::WriteAllText($sshConfig, $content, [System.Text.UTF8Encoding]::new($false))
         Write-Ok "SSH config updated to use McCain key"
 
         # Step 4: Load key into ssh-agent for this session
@@ -874,7 +876,7 @@ if ($script:InstallMcp) {
         env           = $dbEnv
     }) -Force
 
-    $mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
+    [System.IO.File]::WriteAllText($McpConfig, ($mcpJson | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
     Write-Ok "Databricks MCP  ->  $McpConfig"
 }
 
@@ -898,7 +900,7 @@ if ($env:NODE_EXTRA_CA_CERTS) {
     })
 }
 $mcpJson.mcpServers | Add-Member -NotePropertyName 'atlassian' -NotePropertyValue $atlassianEntry -Force
-$mcpJson | ConvertTo-Json -Depth 10 | Set-Content $McpConfig -Encoding UTF8
+[System.IO.File]::WriteAllText($McpConfig, ($mcpJson | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
 Write-Ok "Atlassian MCP entry added  ->  $McpConfig"
 
 # -- OAuth via mcp-remote (browser) -------------------------------------------
