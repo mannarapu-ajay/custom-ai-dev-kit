@@ -1014,20 +1014,20 @@ Write-Msg "Authenticating Atlassian MCP (Confluence + Jira) via OAuth..."
 if (Get-Command npx -ErrorAction SilentlyContinue) {
     $doAtlassian = Read-Prompt "Authenticate with Atlassian now? (y/n)" "y"
     if ($doAtlassian -in @("y", "Y")) {
-        Write-Msg "Starting OAuth flow — a browser window will open."
-        Write-Msg "Sign in with your Atlassian account, then press Enter here to continue."
+        Write-Msg "Starting mcp-remote — a browser may open if authentication is required."
+        Write-Msg "If a browser opens, sign in with your Atlassian account."
+        Write-Msg "If no browser opens, you are already authenticated or will be prompted on first use."
         Write-Host ""
         # Ensure NODE_EXTRA_CA_CERTS is set for the child process
         if (-not $env:NODE_EXTRA_CA_CERTS) {
             $env:NODE_EXTRA_CA_CERTS = [System.Environment]::GetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "User")
         }
         # Launch via cmd.exe so npx.cmd resolves correctly on Windows.
-        # mcp-remote opens the browser automatically once it starts.
         $npxArgs = "npx --yes mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first"
         $atlassianProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $npxArgs -PassThru -WindowStyle Minimized
-        # Give mcp-remote a moment to start and open the browser
+        # Give mcp-remote a moment to start
         Start-Sleep -Seconds 5
-        Read-Prompt "Press Enter after completing Atlassian authentication in the browser" "" | Out-Null
+        Read-Prompt "Press Enter to continue" "" | Out-Null
         if ($atlassianProc -and -not $atlassianProc.HasExited) {
             try {
                 $atlassianProc | Stop-Process -Force -ErrorAction SilentlyContinue
