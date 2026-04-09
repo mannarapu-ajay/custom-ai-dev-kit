@@ -683,7 +683,7 @@ if ($EnterpriseSkillsMode -eq "git" -and $EnterpriseSkillsRepo) {
                     $script:SkillsAuthMode = "skip"
                 }
             } else {
-                Write-Warn "Account '$($ghUser ?? 'unknown')' does not have access to: $EnterpriseSkillsRepo"
+                Write-Warn "Account '$(if ($ghUser) { $ghUser } else { 'unknown' })' does not have access to: $EnterpriseSkillsRepo"
                 Write-Msg  "  Contact your administrator to get access, then re-run:"
                 Write-Msg  "    .\enterprise_install.ps1 -SkillsOnly"
                 Write-Msg  "  Continuing with MCP and other setup..."
