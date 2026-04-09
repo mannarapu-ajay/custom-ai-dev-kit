@@ -133,9 +133,13 @@ while ($i -lt $args.Count) {
             Write-Host ""
             Write-Host "$EnterpriseDisplay Enterprise AI Dev Kit Installer"
             Write-Host ""
-            Write-Host "Usage: .\enterprise_install.ps1 [OPTIONS]"
+            Write-Host "Usage (recommended -- no clone needed):"
+            Write-Host "  irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex"
             Write-Host ""
-            Write-Host "Options:"
+            Write-Host "Usage (local clone):"
+            Write-Host "  .\enterprise_install.ps1 [OPTIONS]"
+            Write-Host ""
+            Write-Host "Options (local clone only -- use env vars with irm | iex):"
             Write-Host "  -Profile NAME        Databricks profile (default: DEFAULT)"
             Write-Host "  -Global              Install globally (not per-project)"
             Write-Host "  -SkillsOnly          Fast path: only update skills (runs Steps 2 + 7 only)"
@@ -144,10 +148,14 @@ while ($i -lt $args.Count) {
             Write-Host "  -Silent              No output except errors"
             Write-Host "  -Force               Force reinstall"
             Write-Host ""
-            Write-Host "Environment variables:"
-            Write-Host "  DEVKIT_PROFILE       Databricks config profile"
-            Write-Host "  DEVKIT_FORCE         Set to 'true' to force reinstall"
-            Write-Host "  AIDEVKIT_HOME        MCP install dir (default: ~\.ai-dev-kit)"
+            Write-Host "Environment variables (work with both irm | iex and local clone):"
+            Write-Host "  DEVKIT_PROFILE         Databricks config profile"
+            Write-Host "  DEVKIT_FORCE           Set to 'true' to force reinstall"
+            Write-Host "  DEVKIT_SKILLS_ONLY     Set to 'true' to update skills only (equivalent to -SkillsOnly)"
+            Write-Host "  DEVKIT_MCP_ONLY        Set to 'true' to skip skills installation (equivalent to -McpOnly)"
+            Write-Host "  DEVKIT_SKILLS_PROFILE  Skill profiles: all,data-engineer,analyst,ai-ml-engineer,app-developer"
+            Write-Host "  DEVKIT_SILENT          Set to 'true' for no output except errors"
+            Write-Host "  AIDEVKIT_HOME          MCP install dir (default: ~\.ai-dev-kit)"
             Write-Host ""
             exit 0
         }
@@ -900,7 +908,7 @@ if ($env:NODE_EXTRA_CA_CERTS -and (Test-Path $env:NODE_EXTRA_CA_CERTS)) {
             $pemLines += [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
             $pemLines += "-----END CERTIFICATE-----"
         }
-        $pemLines | Set-Content $caBundle -Encoding UTF8
+        [System.IO.File]::WriteAllText($caBundle, ($pemLines -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
         $env:NODE_EXTRA_CA_CERTS = $caBundle
         # Persist to user environment
         [System.Environment]::SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", $caBundle, "User")
@@ -1071,7 +1079,7 @@ if (-not $hasUpdateHook) {
         hooks = @([PSCustomObject]@{ type = "command"; command = $UpdateCheckCmd; timeout = 5 })
     }
 }
-$settingsJson | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding UTF8
+[System.IO.File]::WriteAllText($settingsPath, ($settingsJson | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
 Write-Ok ".claude/settings.json  ->  $settingsPath"
 
 # -- Install skills -----------------------------------------------------------
@@ -1196,21 +1204,14 @@ Write-Ok ".gitignore updated"
 # -- src/generated/README.md --------------------------------------------------
 $genReadme = Join-Path $script:ProjectDir "src\generated\README.md"
 if (-not (Test-Path $genReadme)) {
-    @"
-# Generated Code
-
-This directory is managed by Claude Code.
-All AI-generated code is placed here automatically.
-
-> Do not manually edit files in this directory.
-"@ | Set-Content $genReadme -Encoding UTF8
+    [System.IO.File]::WriteAllText($genReadme, "# Generated Code`n`nThis directory is managed by Claude Code.`nAll AI-generated code is placed here automatically.`n`n> Do not manually edit files in this directory.`n", [System.Text.UTF8Encoding]::new($false))
 }
 Write-Ok "src/generated/README.md"
 
 # -- instruction-templates/default.md -----------------------------------------
 $tmpl = Join-Path $script:ProjectDir "instruction-templates\default.md"
 if (-not (Test-Path $tmpl)) {
-    @"
+    $tmplContent = @"
 # Project Instructions
 
 This project uses Databricks on the Lakehouse platform.
@@ -1232,7 +1233,8 @@ Workspace:  $($script:WorkspaceUrl)
 - Catalog: ``<set your catalog>``
 - Environment: ``dev | staging | prod``
 - Team: ``<set your team>``
-"@ | Set-Content $tmpl -Encoding UTF8
+"@
+    [System.IO.File]::WriteAllText($tmpl, $tmplContent, [System.Text.UTF8Encoding]::new($false))
 }
 Write-Ok "instruction-templates/default.md"
 
@@ -1254,12 +1256,12 @@ if (Test-Path $metaFile) {
         foreach ($key in $meta.Keys | Where-Object { $_ -ne "created_at" }) {
             $old | Add-Member -NotePropertyName $key -NotePropertyValue $meta[$key] -Force
         }
-        $old | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
+        [System.IO.File]::WriteAllText($metaFile, ($old | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
     } catch {
-        [PSCustomObject]$meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
+        [System.IO.File]::WriteAllText($metaFile, ([PSCustomObject]$meta | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
     }
 } else {
-    [PSCustomObject]$meta | ConvertTo-Json -Depth 5 | Set-Content $metaFile -Encoding UTF8
+    [System.IO.File]::WriteAllText($metaFile, ([PSCustomObject]$meta | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
 }
 
 $lock = [ordered]@{
@@ -1268,7 +1270,7 @@ $lock = [ordered]@{
     databricks_workspace = $script:WorkspaceUrl
     installed_at         = $now
 }
-[PSCustomObject]$lock | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $StateDirPath "version.lock") -Encoding UTF8
+[System.IO.File]::WriteAllText((Join-Path $StateDirPath "version.lock"), ([PSCustomObject]$lock | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
 
 Write-Ok "$StateSubdir/metadata.json"
 Write-Ok "$StateSubdir/version.lock"
