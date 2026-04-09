@@ -432,18 +432,37 @@ if (-not $_prereqOk) {
 if (Get-Command databricks -ErrorAction SilentlyContinue) {
     Write-Ok "Databricks CLI: $(& databricks --version 2>&1 | Select-Object -First 1)"
 } else {
-    Write-Warn "Databricks CLI not found — installing via winget..."
+    Write-Warn "Databricks CLI not found — downloading from GitHub releases..."
     try {
-        & winget install Databricks.DatabricksCLI --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        $releaseApi = "https://api.github.com/repos/databricks/cli/releases/latest"
+        $release    = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ 'User-Agent' = 'enterprise-install' }
+        $asset      = $release.assets | Where-Object { $_.name -match "windows_amd64\.zip$" } | Select-Object -First 1
+        if (-not $asset) { throw "No Windows amd64 asset found in Databricks CLI release $($release.tag_name)" }
+
+        Write-Msg "Downloading $($asset.name) ($($release.tag_name))..."
+        $zipPath = Join-Path $env:TEMP "databricks_cli.zip"
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+
+        $installDir = Join-Path $env:USERPROFILE ".databricks\bin"
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $installDir -Force
+        Remove-Item $zipPath -ErrorAction SilentlyContinue
+
+        # Add install dir to user PATH persistently
+        $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$installDir*") {
+            [System.Environment]::SetEnvironmentVariable("Path", "$userPath;$installDir", "User")
+        }
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
         if (Get-Command databricks -ErrorAction SilentlyContinue) {
             Write-Ok "Databricks CLI: $(& databricks --version 2>&1 | Select-Object -First 1) (just installed)"
         } else {
-            Write-Warn "Databricks CLI installed but not in PATH yet — restart your terminal after this script."
+            Write-Warn "Databricks CLI installed to $installDir but not in PATH yet — restart your terminal after this script."
         }
     } catch {
-        Write-Warn "Could not auto-install Databricks CLI."
-        Write-Msg  "  Run manually: winget install Databricks.DatabricksCLI"
+        Write-Warn "Could not auto-install Databricks CLI: $_"
+        Write-Msg  "  Download manually from: https://github.com/databricks/cli/releases"
     }
 }
 
