@@ -110,7 +110,6 @@ MCP_ENTRY="$REPO_DIR/databricks-mcp-server/run_server.py"
 ENTERPRISE_SKILLS_LOCAL="$REPO_DIR/enterprise_skills"
 ENTERPRISE_SKILLS_REPO_DIR="$INSTALL_DIR/${ENTERPRISE_NAME}-skills-repo"
 UPDATE_CHECK_CMD="bash $REPO_DIR/.claude-plugin/check_update.sh"
-STATE_SUBDIR=".${ENTERPRISE_NAME}-adk"
 
 # =============================================================================
 # ── DEFAULTS  (overridable by flags / env vars) ───────────────────────────────
@@ -361,19 +360,7 @@ else
     ok "Project dir: $PROJECT_DIR"
 fi
 
-# Compute scope-local state dir
-STATE_DIR_PATH="$PROJECT_DIR/$STATE_SUBDIR"
-[ "$SCOPE" = "global" ] && STATE_DIR_PATH="$INSTALL_DIR/$STATE_SUBDIR"
-
-mkdir -p \
-    "$PROJECT_DIR/.claude/skills" \
-    "$STATE_DIR_PATH"
-
-if [ "$SKILLS_ONLY" = false ]; then
-    mkdir -p \
-        "$PROJECT_DIR/src/generated" \
-        "$PROJECT_DIR/instruction-templates"
-fi
+mkdir -p "$PROJECT_DIR/.claude/skills"
 
 ok "Workspace directories created"
 
@@ -956,6 +943,11 @@ if [ "$INSTALL_SKILLS" = true ]; then
     SKILLS_DEST="$PROJECT_DIR/.claude/skills"
     mkdir -p "$SKILLS_DEST"
 
+    # Init .ai-dev-kit manifest (written inline as each skill installs)
+    _adk="$PROJECT_DIR/.ai-dev-kit"
+    mkdir -p "$_adk"
+    : > "$_adk/.installed-skills"
+
     # Databricks skills — from this repo
     DB_COUNT=0
     if [ -d "$REPO_DIR/databricks-skills" ]; then
@@ -963,6 +955,7 @@ if [ "$INSTALL_SKILLS" = true ]; then
             name=$(basename "$skill_dir")
             [ "$name" = "TEMPLATE" ] && continue
             cp -r "$skill_dir" "$SKILLS_DEST/$name"
+            echo "$SKILLS_DEST|$name" >> "$_adk/.installed-skills"
             DB_COUNT=$((DB_COUNT + 1))
         done
     fi
@@ -1053,6 +1046,7 @@ if [ "$INSTALL_SKILLS" = true ]; then
             # Only copy directories that contain a SKILL.md
             [ -f "$skill_dir/SKILL.md" ] || continue
             cp -r "$skill_dir" "$SKILLS_DEST/$name"
+            echo "$SKILLS_DEST|$name" >> "$_adk/.installed-skills"
             ENT_COUNT=$((ENT_COUNT + 1))
         done
         ok "Enterprise skills  ($ENT_COUNT installed)  ->  $SKILLS_DEST"
@@ -1067,95 +1061,32 @@ fi
 
 if [ "$SKILLS_ONLY" = false ]; then
 
-step "Step 8 of 8 — Workspace + Version Lock"
+step "Step 8 of 8 — Workspace"
+
+# ── .ai-dev-kit state files (same format as official install.sh) ─────────────
+_adk="$PROJECT_DIR/.ai-dev-kit"
+mkdir -p "$_adk"
+
+# version — from our enterprise repo's VERSION file
+_adk_ver=$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo "enterprise")
+echo "$_adk_ver" > "$_adk/version"
+ok ".ai-dev-kit/version  ($( cat "$_adk/version" ))"
+
+# .installed-skills — written inline during Step 7; ensure file exists if skills were skipped
+touch "$_adk/.installed-skills"
+ok ".ai-dev-kit/.installed-skills"
+
+# .skills-profile
+echo "enterprise" > "$_adk/.skills-profile"
+ok ".ai-dev-kit/.skills-profile"
 
 # ── .gitignore ────────────────────────────────────────────────────────────────
 GITIGNORE="$PROJECT_DIR/.gitignore"
 touch "$GITIGNORE"
-for rule in "$STATE_SUBDIR/" ".claude/" ".mcp.json" "src/generated/" ".databricks/" ".env" "__pycache__/" "*.pyc"; do
+for rule in ".ai-dev-kit/" ".claude/" ".mcp.json" ".databricks/" ".env" "__pycache__/" "*.pyc"; do
     grep -qiF "$rule" "$GITIGNORE" 2>/dev/null || echo "$rule" >> "$GITIGNORE"
 done
 ok ".gitignore updated"
-
-# ── src/generated/README.md ───────────────────────────────────────────────────
-GEN_README="$PROJECT_DIR/src/generated/README.md"
-if [ ! -f "$GEN_README" ]; then
-    cat > "$GEN_README" <<'EOF'
-# Generated Code
-
-This directory is managed by Claude Code.
-All AI-generated code is placed here automatically.
-
-> Do not manually edit files in this directory.
-EOF
-fi
-ok "src/generated/README.md"
-
-# ── instruction-templates/default.md ─────────────────────────────────────────
-TMPL="$PROJECT_DIR/instruction-templates/default.md"
-if [ ! -f "$TMPL" ]; then
-    cat > "$TMPL" <<EOF
-# Project Instructions
-
-This project uses Databricks on the Lakehouse platform.
-Enterprise: **${ENTERPRISE_DISPLAY}**
-Workspace:  $WORKSPACE_URL
-
-## Code Generation Rules
-- ALL generated code MUST go into \`src/generated/\`
-- Never write generated files outside \`src/generated/\`
-
-## Active Skills
-- **Databricks skills**: all skills from ai-dev-kit
-- **enterprise-naming-convention**: naming standards for all assets
-- **enterprise-dynamic-modeling**: config-driven transformation patterns
-- **enterprise-data-governance**: PII tagging and data retention policies
-- **enterprise-cost-optimization**: cluster policies and cost attribution
-
-## Context
-- Catalog: \`<set your catalog>\`
-- Environment: \`dev | staging | prod\`
-- Team: \`<set your team>\`
-EOF
-fi
-ok "instruction-templates/default.md"
-
-# ── metadata.json + version.lock ─────────────────────────────────────────────
-NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-python3 -c "
-import json, pathlib
-
-state = pathlib.Path('$STATE_DIR_PATH')
-state.mkdir(parents=True, exist_ok=True)
-
-meta = {
-    'enterprise':    '$ENTERPRISE_NAME',
-    'workspace_url': '$WORKSPACE_URL',
-    'profile':       '$PROFILE',
-    'project_root':  '$PROJECT_DIR',
-    'created_at':    '$NOW',
-}
-meta_file = state / 'metadata.json'
-if meta_file.exists():
-    try:
-        old = json.loads(meta_file.read_text())
-        old.update({k: v for k, v in meta.items() if k != 'created_at'})
-        meta = old
-    except: pass
-meta_file.write_text(json.dumps(meta, indent=2) + '\n')
-
-lock = {
-    'enterprise_adk':       'enterprise-install',
-    'enterprise_skills':    'bundled',
-    'databricks_workspace': '$WORKSPACE_URL',
-    'installed_at':         '$NOW',
-}
-(state / 'version.lock').write_text(json.dumps(lock, indent=2) + '\n')
-"
-
-ok "$STATE_SUBDIR/metadata.json"
-ok "$STATE_SUBDIR/version.lock"
 
 fi  # end SKILLS_ONLY skip (Step 8)
 

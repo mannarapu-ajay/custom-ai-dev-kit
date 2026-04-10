@@ -95,7 +95,6 @@ $McpEntry    = Join-Path $RepoDir "databricks-mcp-server\run_server.py"
 $EntSkillsLocal   = Join-Path $RepoDir "enterprise_skills"
 $EntSkillsRepoDir = Join-Path $InstallDir "$EnterpriseName-skills-repo"
 $UpdateCheckCmd   = "powershell -File `"$(Join-Path $RepoDir '.claude-plugin\check_update.ps1')`""
-$StateSubdir      = ".$EnterpriseName-adk"
 
 # =============================================================================
 # -- DEFAULTS  (overridable by flags / env vars) -------------------------------
@@ -437,20 +436,7 @@ if ($script:SkillsOnly) {
     Write-Ok "Project dir: $($script:ProjectDir)"
 }
 
-$StateDirPath = Join-Path $script:ProjectDir $StateSubdir
-if ($script:Scope -eq "global") { $StateDirPath = Join-Path $InstallDir $StateSubdir }
-
-foreach ($d in @(
-    (Join-Path $script:ProjectDir ".claude\skills"),
-    $StateDirPath
-)) { New-Item -ItemType Directory -Path $d -Force -ErrorAction SilentlyContinue | Out-Null }
-
-if (-not $script:SkillsOnly) {
-    foreach ($d in @(
-        (Join-Path $script:ProjectDir "src\generated"),
-        (Join-Path $script:ProjectDir "instruction-templates")
-    )) { New-Item -ItemType Directory -Path $d -Force -ErrorAction SilentlyContinue | Out-Null }
-}
+New-Item -ItemType Directory -Path (Join-Path $script:ProjectDir ".claude\skills") -Force -ErrorAction SilentlyContinue | Out-Null
 
 Write-Ok "Workspace directories created"
 
@@ -1014,14 +1000,21 @@ Write-Msg "Authenticating Atlassian MCP (Confluence + Jira) via OAuth..."
 if (Get-Command npx -ErrorAction SilentlyContinue) {
     $doAtlassian = Read-Prompt "Authenticate with Atlassian now? (y/n)" "y"
     if ($doAtlassian -in @("y", "Y")) {
-        Write-Msg "Starting mcp-remote — a browser may open if authentication is required."
-        Write-Msg "If a browser opens, sign in with your Atlassian account."
-        Write-Msg "If no browser opens, you are already authenticated or will be prompted on first use."
+        Write-Msg "Starting OAuth flow — a browser window will open."
+        Write-Msg "Sign in with your Atlassian account, then press Enter here to continue."
         Write-Host ""
         # Ensure NODE_EXTRA_CA_CERTS is set for the child process
         if (-not $env:NODE_EXTRA_CA_CERTS) {
             $env:NODE_EXTRA_CA_CERTS = [System.Environment]::GetEnvironmentVariable("NODE_EXTRA_CA_CERTS", "User")
         }
+        # Kill any leftover mcp-remote listener on OAuth callback port 3736 from a previous run
+        try {
+            $netOut = netstat -ano 2>$null | Select-String ":3736\s"
+            if ($netOut) {
+                $port3736Pid = ($netOut[0].Line.Trim() -split '\s+')[-1]
+                if ($port3736Pid -match '^\d+$') { Stop-Process -Id ([int]$port3736Pid) -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
         # Launch via cmd.exe so npx.cmd resolves correctly on Windows.
         $npxArgs = "npx --yes mcp-remote https://mcp.atlassian.com/v1/mcp --transport http-first"
         $atlassianProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $npxArgs -PassThru -WindowStyle Minimized
@@ -1086,11 +1079,18 @@ if ($script:InstallSkills) {
     $skillsDest = Join-Path $script:ProjectDir ".claude\skills"
     New-Item -ItemType Directory -Path $skillsDest -Force -ErrorAction SilentlyContinue | Out-Null
 
+    # Init .ai-dev-kit manifest (written inline as each skill installs)
+    $_adk = Join-Path $script:ProjectDir ".ai-dev-kit"
+    New-Item -ItemType Directory -Path $_adk -Force -ErrorAction SilentlyContinue | Out-Null
+    $_manifestPath = Join-Path $_adk ".installed-skills"
+    [System.IO.File]::WriteAllText($_manifestPath, "", [System.Text.UTF8Encoding]::new($false))
+
     # Databricks skills - from this repo
     $dbSkillsDir = Join-Path $RepoDir "databricks-skills"
     if (Test-Path $dbSkillsDir) {
         Get-ChildItem -Path $dbSkillsDir -Directory | Where-Object { $_.Name -ne "TEMPLATE" } | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination (Join-Path $skillsDest $_.Name) -Recurse -Force
+            Add-Content -Path $_manifestPath -Value "$skillsDest|$($_.Name)" -Encoding UTF8
             $dbCount++
         }
     }
@@ -1170,6 +1170,7 @@ if ($script:InstallSkills) {
         Get-ChildItem -Path $entSource -Directory | Where-Object { $_.Name -ne "TEMPLATE" } | ForEach-Object {
             if (Test-Path (Join-Path $_.FullName "SKILL.md")) {
                 Copy-Item -Path $_.FullName -Destination (Join-Path $skillsDest $_.Name) -Recurse -Force
+                Add-Content -Path $_manifestPath -Value "$skillsDest|$($_.Name)" -Encoding UTF8
                 $entCount++
             }
         }
@@ -1185,90 +1186,37 @@ if ($script:InstallSkills) {
 
 if (-not $script:SkillsOnly) {
 
-Write-Step "Step 8 of 8 — Workspace + Version Lock"
+Write-Step "Step 8 of 8 — Workspace"
+
+# -- .ai-dev-kit state files (same format as official install.ps1) ------------
+$_adk = Join-Path $script:ProjectDir ".ai-dev-kit"
+New-Item -ItemType Directory -Path $_adk -Force -ErrorAction SilentlyContinue | Out-Null
+
+# version — from our enterprise repo's VERSION file
+$_verFile = Join-Path $RepoDir "VERSION"
+$_adkVer  = if (Test-Path $_verFile) { (Get-Content $_verFile -Raw).Trim() } else { "enterprise" }
+Set-Content -Path (Join-Path $_adk "version") -Value $_adkVer -Encoding UTF8
+Write-Ok ".ai-dev-kit/version  ($_adkVer)"
+
+# .installed-skills — written inline during Step 7; ensure file exists if skills were skipped
+$_manifest = Join-Path $_adk ".installed-skills"
+if (-not (Test-Path $_manifest)) {
+    [System.IO.File]::WriteAllText($_manifest, "", [System.Text.UTF8Encoding]::new($false))
+}
+Write-Ok ".ai-dev-kit/.installed-skills"
+
+# .skills-profile
+Set-Content -Path (Join-Path $_adk ".skills-profile") -Value "enterprise" -Encoding UTF8
+Write-Ok ".ai-dev-kit/.skills-profile"
 
 # -- .gitignore ---------------------------------------------------------------
 $gitignore = Join-Path $script:ProjectDir ".gitignore"
 if (-not (Test-Path $gitignore)) { New-Item -ItemType File -Path $gitignore -Force | Out-Null }
 $giContent = Get-Content $gitignore -ErrorAction SilentlyContinue
-foreach ($rule in @("$StateSubdir/", ".claude/", ".mcp.json", "src/generated/", ".databricks/", ".env", "__pycache__/", "*.pyc")) {
+foreach ($rule in @(".ai-dev-kit/", ".claude/", ".mcp.json", ".databricks/", ".env", "__pycache__/", "*.pyc")) {
     if (-not ($giContent | Where-Object { $_.Trim() -ieq $rule })) { Add-Content $gitignore $rule }
 }
 Write-Ok ".gitignore updated"
-
-# -- src/generated/README.md --------------------------------------------------
-$genReadme = Join-Path $script:ProjectDir "src\generated\README.md"
-if (-not (Test-Path $genReadme)) {
-    [System.IO.File]::WriteAllText($genReadme, "# Generated Code`n`nThis directory is managed by Claude Code.`nAll AI-generated code is placed here automatically.`n`n> Do not manually edit files in this directory.`n", [System.Text.UTF8Encoding]::new($false))
-}
-Write-Ok "src/generated/README.md"
-
-# -- instruction-templates/default.md -----------------------------------------
-$tmpl = Join-Path $script:ProjectDir "instruction-templates\default.md"
-if (-not (Test-Path $tmpl)) {
-    $tmplContent = @"
-# Project Instructions
-
-This project uses Databricks on the Lakehouse platform.
-Enterprise: **$EnterpriseDisplay**
-Workspace:  $($script:WorkspaceUrl)
-
-## Code Generation Rules
-- ALL generated code MUST go into ``src/generated/``
-- Never write generated files outside ``src/generated/``
-
-## Active Skills
-- **Databricks skills**: all skills from ai-dev-kit
-- **enterprise-naming-convention**: naming standards for all assets
-- **enterprise-dynamic-modeling**: config-driven transformation patterns
-- **enterprise-data-governance**: PII tagging and data retention policies
-- **enterprise-cost-optimization**: cluster policies and cost attribution
-
-## Context
-- Catalog: ``<set your catalog>``
-- Environment: ``dev | staging | prod``
-- Team: ``<set your team>``
-"@
-    [System.IO.File]::WriteAllText($tmpl, $tmplContent, [System.Text.UTF8Encoding]::new($false))
-}
-Write-Ok "instruction-templates/default.md"
-
-# -- metadata.json + version.lock ---------------------------------------------
-$now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-New-Item -ItemType Directory -Path $StateDirPath -Force -ErrorAction SilentlyContinue | Out-Null
-
-$metaFile = Join-Path $StateDirPath "metadata.json"
-$meta = [ordered]@{
-    enterprise    = $EnterpriseName
-    workspace_url = $script:WorkspaceUrl
-    profile       = $script:Profile_
-    project_root  = $script:ProjectDir
-    created_at    = $now
-}
-if (Test-Path $metaFile) {
-    try {
-        $old = Get-Content $metaFile -Raw | ConvertFrom-Json
-        foreach ($key in $meta.Keys | Where-Object { $_ -ne "created_at" }) {
-            $old | Add-Member -NotePropertyName $key -NotePropertyValue $meta[$key] -Force
-        }
-        [System.IO.File]::WriteAllText($metaFile, ($old | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-    } catch {
-        [System.IO.File]::WriteAllText($metaFile, ([PSCustomObject]$meta | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-    }
-} else {
-    [System.IO.File]::WriteAllText($metaFile, ([PSCustomObject]$meta | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-}
-
-$lock = [ordered]@{
-    enterprise_adk       = "enterprise-install"
-    enterprise_skills    = "bundled"
-    databricks_workspace = $script:WorkspaceUrl
-    installed_at         = $now
-}
-[System.IO.File]::WriteAllText((Join-Path $StateDirPath "version.lock"), ([PSCustomObject]$lock | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-
-Write-Ok "$StateSubdir/metadata.json"
-Write-Ok "$StateSubdir/version.lock"
 
 } # end SkillsOnly skip (Step 8)
 

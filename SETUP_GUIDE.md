@@ -1,12 +1,12 @@
 # McCain Enterprise AI Dev Kit — Setup Guide
 
-This guide walks you through the complete setup process, step by step, including exactly what you will see and what to do at every prompt.
+Complete step-by-step guide covering every prompt and what to do at each one.
 
 ---
 
 ## Before You Start
 
-You need two things on your machine before running anything:
+You need two things before running anything:
 
 - A terminal (macOS/Linux: **Terminal** or **iTerm2** | Windows: **PowerShell**)
 - Your **McCain corporate GitHub account** (the one under `@McCainFoods`)
@@ -15,88 +15,70 @@ You need two things on your machine before running anything:
 
 ## Overview
 
-Setup happens in two stages:
-
 ```
-Stage 1 — Prerequisites         curl one-liner, no clone needed  (~5 min, one-time)
+Stage 1 — Prerequisites         run via curl/irm, no clone needed   (~5 min, one-time)
   ↓
-Stage 2 — Enterprise Install    curl one-liner, auto-clones repo  (~10 min, per project)
+Stage 2 — Enterprise Install    run via curl/irm, auto-clones repo   (~10 min, per project)
 ```
 
-| Stage | Script | Needs clone? | What it does |
-|-------|--------|-------------|-------------|
-| 1 | `prerequisites.sh` / `prerequisites.ps1` | No — run via curl/irm | Installs Git, GitHub CLI, SSH key, uv, Node.js |
-| 2 | `enterprise_install.sh` / `enterprise_install.ps1` | No — auto-clones | Sets up Databricks, MCP servers, enterprise skills |
+| Stage | Script | What it does |
+|-------|--------|-------------|
+| 1 | `prerequisites.sh` / `prerequisites.ps1` | Git, GitHub CLI, SSH key, uv, Node.js |
+| 2 | `enterprise_install.sh` / `enterprise_install.ps1` | Databricks, MCP servers, enterprise skills |
 
-> Do NOT run the official Databricks `install.sh` — this enterprise installer fully replaces it.
+> Do **not** run the official Databricks `install.sh` — the enterprise installer fully replaces it.
 
 ---
 
 ## Stage 1 — Prerequisites
 
-The prerequisites script is **fully standalone** — run it directly from GitHub, no clone needed.
+Run once per machine. No clone needed — runs directly from GitHub.
 
-### macOS / Linux
-
+**macOS / Linux:**
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/prerequisites.sh)
 ```
 
-### Windows (PowerShell)
-
+**Windows (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/prerequisites.ps1 | iex
 ```
 
 ---
 
-### What happens inside Prerequisites (3 steps)
+### Prerequisites — Step 1 of 3: Git + GitHub Authentication
 
----
+Installs Git and the GitHub CLI (`gh`), then handles your GitHub identity and SSH key.
 
-#### Prerequisites — Step 1 of 3: Git + GitHub Authentication
-
-The script installs Git and the GitHub CLI (`gh`) if not already present, then handles your GitHub identity and SSH key.
-
-**Scenario A — You are already logged into GitHub:**
-
+**Scenario A — Already logged in:**
 ```
   ✓ Already authenticated with GitHub  (your-username)
   Is 'your-username' your McCain corporate GitHub account? (y/n) [y]:
 ```
+- Press **Enter** (or `y`) if this is your McCain account
+- Type `n` if it's a personal account — browser opens for you to log in with the right account
 
-- Type `y` + Enter if this is your McCain GitHub account
-- Type `n` + Enter if it's a personal account — the browser will open for you to log in with the right account
-
-**Scenario B — Not authenticated:**
-
+**Scenario B — Not logged in:**
 ```
   Not authenticated with GitHub — opening browser...
 ```
-
-- Your browser opens automatically
-- Log in with your **McCain corporate GitHub account**
-- Authorize the GitHub CLI when prompted
-- Return to the terminal when done
+- Browser opens automatically — log in with your **McCain corporate GitHub account**
+- Authorize the GitHub CLI, then return to the terminal
 
 ---
 
-**Git identity prompt** (always shown):
-
+**Git identity:**
 ```
   Full name for git config [First Last]:
   McCain email for git config (e.g. first.last@mccain.ca) [yourname@mccain.ca]:
 ```
-
-- Type your full name, press Enter
-- Type your McCain email address, press Enter
-- If the values shown in brackets are already correct, just press Enter to accept them
+Press Enter to accept if the values shown are correct, otherwise type the correct values.
 
 ---
 
-**SSH key setup** — the script generates a dedicated McCain SSH key (`~/.ssh/id_ed25519_mccain`) and registers it on GitHub.
+**SSH key + SAML SSO:**
 
-You will then see:
+The script generates `~/.ssh/id_ed25519_mccain` and registers it on GitHub. You will then see:
 
 ```
   ! ACTION REQUIRED — SAML SSO authorization
@@ -111,50 +93,30 @@ You will then see:
 
   Press Enter once you have authorized the key (or to skip) []:
 ```
-
-- Go to the browser tab that opened (GitHub SSH keys page)
-- Find the key listed with your machine name
-- Click **Configure SSO** → **Authorize McCainFoods**
-- Come back to the terminal and press **Enter**
+- In the browser tab that opened: find the key → **Configure SSO** → **Authorize McCainFoods**
+- Return to terminal, press **Enter**
 
 > If you already authorized this key before, just press Enter to skip.
 
 ---
 
-#### Prerequisites — Step 2 of 3: uv (Python package manager)
+### Prerequisites — Step 2 of 3: uv
 
-Fully automatic. You will see either:
-
+Fully automatic:
 ```
   ✓ uv already installed  (uv 0.x.x)
 ```
-or:
-```
-  uv not found — installing...
-  ✓ uv installed  (uv 0.x.x)
-```
-
-No action needed.
+or installs it silently. No action needed.
 
 ---
 
-#### Prerequisites — Step 3 of 3: Node.js / npx
+### Prerequisites — Step 3 of 3: Node.js / npx
 
-Fully automatic. You will see either:
-
-```
-  ✓ Node.js already installed  (v20.x.x)
-  ✓ npx available  (10.x.x)
-```
-or the installer will install Node.js automatically.
-
-No action needed.
+Fully automatic. No action needed.
 
 ---
 
-#### Prerequisites — Summary
-
-When complete you will see:
+### Prerequisites — Done
 
 ```
 ════════════════════════════════════════════════════════
@@ -167,19 +129,19 @@ When complete you will see:
   ✓ npx     10.x.x
 ```
 
-**Prerequisites are done. Move to Stage 2.**
+**Move to Stage 2.**
 
 ---
 
 ## Stage 2 — Enterprise Install
 
-Run this from **your project directory** (the folder where you want to work).
+Run from **your project directory** (the folder where you want to work).
 
-The enterprise installer automatically clones the kit repo to `~/.ai-dev-kit/repo` on first run and auto-updates it on every subsequent run — **you never need to `git clone` or `git pull` manually.**
+The installer auto-clones the kit repo to `~/.ai-dev-kit/repo` on first run and silently updates it on every subsequent run — **no manual `git clone` needed.**
 
 ---
 
-### Option A — Run directly from GitHub (recommended)
+### Option A — Run from GitHub (recommended)
 
 **macOS / Linux:**
 ```bash
@@ -193,21 +155,13 @@ cd C:\Users\you\my-project
 irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex
 ```
 
-> On first run the script clones the kit to `~/.ai-dev-kit/repo` (Mac/Linux) or `%USERPROFILE%\.ai-dev-kit\repo` (Windows). On every subsequent run it silently updates to the latest version.
-
 ---
 
-### Option B — Run from a locally cloned repo
-
-If you already have the repo cloned on your machine, the script detects this automatically and uses it directly — no `~/.ai-dev-kit/repo` clone is created.
+### Option B — Run from a local clone
 
 ```bash
-# Clone once (anywhere on your machine)
 git clone https://github.com/mannarapu-ajay/custom-ai-dev-kit.git
-cd custom-ai-dev-kit
 ```
-
-Then run from your **project directory**:
 
 **macOS / Linux:**
 ```bash
@@ -215,30 +169,26 @@ cd ~/my-project
 bash /path/to/custom-ai-dev-kit/enterprise_install.sh
 ```
 
-**Windows (PowerShell):**
+**Windows:**
 ```powershell
 cd C:\Users\you\my-project
 powershell -ExecutionPolicy Bypass -File C:\path\to\custom-ai-dev-kit\enterprise_install.ps1
 ```
 
-> Both Option A and Option B behave identically — same steps, same output, same result.
+Both options behave identically — same steps, same result.
 
 ---
 
-### Update skills only
+### Common flags
 
-Run this whenever new Databricks or enterprise skills are released:
+| Task | macOS / Linux | Windows |
+|------|--------------|---------|
+| Update skills only | `... enterprise_install.sh --skills-only` | `$env:DEVKIT_SKILLS_ONLY="true"; irm ... \| iex` |
+| Force full reinstall | `... enterprise_install.sh --force` | `$env:DEVKIT_FORCE="true"; irm ... \| iex` |
+| Specify profile | `... enterprise_install.sh --profile NAME` | `$env:DEVKIT_PROFILE="NAME"; irm ... \| iex` |
+| Local file (Windows) | — | `.\enterprise_install.ps1 -SkillsOnly` |
 
-**macOS / Linux:**
-```bash
-cd ~/my-project
-bash <(curl -sL https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.sh) --skills-only
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:DEVKIT_SKILLS_ONLY="true"; irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex
-```
+> Replace `...` with `bash <(curl -sL https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main`
 
 ---
 
@@ -251,40 +201,29 @@ $env:DEVKIT_SKILLS_ONLY="true"; irm https://raw.githubusercontent.com/mannarapu-
 ```
   Project directory [/current/path]:
 ```
-
-- Press **Enter** to use the current directory (recommended)
-- Or type a different path and press Enter
+Press **Enter** to use the current directory (recommended), or type a different path.
 
 ---
 
 #### Step 2 of 8 — Prerequisites
 
-The script verifies everything from Stage 1 is in place. You will see:
+Verifies everything from Stage 1 is in place:
 
 ```
   ✓ git version 2.x.x
+  ✓ gh CLI: gh version x.x.x
+  ✓ Databricks CLI: x.x.x
   ✓ uv 0.x.x
   ✓ npx 10.x.x
-  ✓ Databricks CLI: x.x.x
-  ✓ gh CLI: gh version x.x.x
 ```
 
-**If any tool is missing**, the script will stop and tell you:
-
-```
-  ✗ Missing prerequisites. Run prerequisites first, then re-run this installer.
-```
-
-Go back to Stage 1, run prerequisites again, then re-run the enterprise installer.
-
-No action needed if all tools are present.
+If any tool is missing the script stops with a specific error. Go back to Stage 1, run prerequisites, then re-run.
 
 ---
 
 #### Step 3 of 8 — Databricks Workspace & Profile
 
-**Workspace selection — radio menu:**
-
+**Workspace selection (arrow keys + Enter):**
 ```
   Choose your Databricks domain / workspace:
   ❯ Growth          https://adb-982288893326755.15.azuredatabricks.net
@@ -296,53 +235,36 @@ No action needed if all tools are present.
     EDP             https://adb-849096460664268.8.azuredatabricks.net
     Enter URL manually
 ```
-
-- Use **arrow keys** (↑ ↓) to move the selection
-- Press **Enter** to confirm
-- Choose **Enter URL manually** if your workspace is not listed — you will be prompted to type the URL
+Choose **Enter URL manually** if your workspace isn't listed.
 
 ---
 
 **Profile selection:**
-
-If you already have Databricks profiles configured (`~/.databrickscfg`):
-
 ```
   Choose Databricks profile:
   ❯ DEFAULT
     my-other-profile
     Custom profile name...
 ```
-
-- Arrow keys + Enter to select an existing profile
-- Choose **Custom profile name...** to type a new one
-
-If no profiles exist yet:
-
+Choose **Custom profile name...** to enter a new one. If no `~/.databrickscfg` exists yet:
 ```
   No ~/.databrickscfg found — you can authenticate after install.
   Profile name [DEFAULT]:
 ```
 
-- Press **Enter** to use `DEFAULT`, or type a name and press Enter
-
 ---
 
-**Databricks OAuth login** — if not already authenticated:
-
+**Databricks OAuth** (if not already authenticated):
 ```
   ! Not authenticated — opening browser for OAuth login…
 ```
-
-- Browser opens automatically to your Databricks workspace
-- Log in and authorize
-- Return to the terminal — it continues automatically
+Browser opens to your workspace — log in and authorize, then return to terminal.
 
 ---
 
 #### Step 4 of 8 — Authentication + CA Certificates
 
-Fully automatic — verifies your Databricks login and sets up corporate CA certificates so tools work behind the corporate proxy.
+Fully automatic — verifies Databricks login and sets up corporate CA certificates.
 
 ```
   ✓ Authenticated as firstname.lastname@mccain.ca
@@ -355,10 +277,11 @@ No action needed.
 
 #### Step 5 of 8 — Databricks MCP
 
-Fully automatic — sets up the Databricks MCP server (the bridge between Claude Code and Databricks).
+Fully automatic — clones/updates the kit repo and sets up the Databricks MCP server.
 
 ```
-  ✓ MCP server ready  →  ~/.ai-dev-kit/.venv
+  ✓ Repository cloned  (main)
+  ✓ MCP server ready
   ✓ Databricks MCP  →  .mcp.json
 ```
 
@@ -371,44 +294,38 @@ No action needed.
 ```
   Authenticate with Atlassian now? (y/n) [y]:
 ```
-
-- Type `y` + Enter to set up Confluence/Jira access now (recommended)
-- Type `n` + Enter to skip — it will prompt you automatically the first time you use it in Claude Code
+- `y` — set up Confluence/Jira access now (recommended)
+- `n` — skip; OAuth will prompt automatically on first use in Claude Code
 
 **If you type `y`:**
-
 ```
   Starting OAuth flow — a browser window will open.
   Sign in with your Atlassian account, then press Enter here to continue.
 ```
-
-- Your browser opens to the Atlassian login page
-- Sign in with your **McCain Atlassian account** (same email as Jira/Confluence)
-- Come back to the terminal
-- Press **Enter**
+- Browser opens to Atlassian login — sign in with your **McCain Atlassian account**
+- Return to terminal, press **Enter**
 
 ```
   ✓ Atlassian MCP authenticated
 ```
 
+> If no browser opens, your OAuth token is already cached from a previous run. Just press Enter.
+
 ---
 
 #### Step 7 of 8 — Skills + Settings
 
-Fully automatic — installs Databricks skills and pulls enterprise skills from the private McCainFoods repo.
+Fully automatic — installs Databricks skills and enterprise skills from the McCainFoods private repo.
 
-**Scenario A — Enterprise skills repo is accessible:**
-
+**Scenario A — All good:**
 ```
   ✓ Enterprise skills repo accessible
   ✓ Databricks skills  (n installed)
   ✓ Enterprise skills  (m installed)
+  ✓ .claude/settings.json
 ```
 
----
-
-**Scenario B — SAML SSO not authorized for the skills repo:**
-
+**Scenario B — SAML SSO not yet authorized for the skills repo:**
 ```
   ! SAML SSO authorization required for enterprise skills repo
     Your SSH key needs to be authorized for the McCainFoods org.
@@ -421,43 +338,53 @@ Fully automatic — installs Databricks skills and pulls enterprise skills from 
 
   Press Enter once you have authorized the key (or to skip):
 ```
+Follow the 3 browser steps, then press **Enter**. The script re-tests and continues.
 
-- Go to your browser, follow the 3 steps
-- Come back to the terminal, press **Enter**
-- The script will re-test and continue
-
----
-
-**Scenario C — Your account doesn't have repo access:**
-
+**Scenario C — No repo access:**
 ```
   ! Account 'your-username' does not have access to: git@github.com:McCainFoods/...
     Contact your administrator to get access, then re-run:
       bash <(curl -sL .../enterprise_install.sh) --skills-only
 ```
-
-- Contact your admin to get access to the McCainFoods enterprise skills repo
-- Once granted, re-run with `--skills-only` (skips all other steps, just updates skills)
+Get access from your admin, then re-run with `--skills-only`.
 
 ---
 
-#### Step 8 of 8 — Workspace + Version Lock
+#### Step 8 of 8 — Workspace
 
-Fully automatic — creates project scaffolding, updates `.gitignore`, writes metadata.
+Fully automatic — writes `.ai-dev-kit/` state files and updates `.gitignore`.
 
 ```
+  ✓ .ai-dev-kit/version  (0.1.7)
+  ✓ .ai-dev-kit/.installed-skills
+  ✓ .ai-dev-kit/.skills-profile
   ✓ .gitignore updated
-  ✓ src/generated/README.md
-  ✓ instruction-templates/default.md
-  ✓ .mccain-adk/metadata.json
-  ✓ .mccain-adk/version.lock
 ```
 
 No action needed.
 
 ---
 
-### Enterprise Install — Final Summary
+### Final project structure
+
+After install your project directory contains:
+
+```
+my-project/
+├── .ai-dev-kit/
+│   ├── version               ← enterprise kit version
+│   ├── .installed-skills     ← manifest of installed skills
+│   └── .skills-profile       ← "enterprise"
+├── .claude/
+│   ├── skills/               ← databricks + enterprise skills
+│   └── settings.json         ← auto-update hook
+├── .mcp.json                 ← Databricks + Atlassian MCP config
+└── .gitignore                ← ignores all of the above
+```
+
+---
+
+### Final Summary screen
 
 ```
 ╔════════════════════════════════════════════════════════╗
@@ -468,8 +395,8 @@ No action needed.
   Enterprise           McCain
   Workspace            https://adb-xxxx.azuredatabricks.net
   Profile              DEFAULT
-  Databricks skills    12 installed
-  Enterprise skills    4 installed
+  Databricks skills    n installed
+  Enterprise skills    m installed
   MCP config           .mcp.json
 
 Next steps:
@@ -479,47 +406,32 @@ Next steps:
 
 ---
 
-## Quick Reference — Commands
-
-| Task | macOS / Linux | Windows |
-|------|--------------|---------|
-| Run prerequisites | `bash <(curl -sL .../prerequisites.sh)` | `irm .../prerequisites.ps1 \| iex` |
-| Run enterprise install | `bash <(curl -sL .../enterprise_install.sh)` | `irm .../enterprise_install.ps1 \| iex` |
-| Update skills only | `bash <(curl -sL .../enterprise_install.sh) --skills-only` | `$env:DEVKIT_SKILLS_ONLY="true"; irm .../enterprise_install.ps1 \| iex` |
-| Force full reinstall | `bash <(curl -sL .../enterprise_install.sh) --force` | `$env:DEVKIT_FORCE="true"; irm .../enterprise_install.ps1 \| iex` |
-| Use a specific profile | `bash <(curl -sL .../enterprise_install.sh) --profile NAME` | `$env:DEVKIT_PROFILE="NAME"; irm .../enterprise_install.ps1 \| iex` |
-| Run from local clone (Mac/Linux) | `bash enterprise_install.sh` | — |
-| Run from local clone (Windows) | — | `.\enterprise_install.ps1` |
-
-> Replace `...` with `https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main`
-
----
-
 ## Troubleshooting
 
-**"git not found" or "uv not found" when running enterprise install**
-→ Run prerequisites first, then re-run the enterprise installer.
+**"git not found" / "uv not found" when running enterprise install**
+→ Run Stage 1 prerequisites first, open a new terminal, then re-run.
 
 **"Could not auto-register SSH key"**
-→ Go to https://github.com/settings/keys and add the public key manually.
-→ The script will print the public key content for you to copy.
+→ Go to https://github.com/settings/keys and add the public key manually (the script prints it for you).
 
 **"SAML SSO authorization required"**
-→ The browser will open automatically. Find your SSH key → Configure SSO → Authorize McCainFoods.
+→ Browser opens automatically. Find your SSH key → Configure SSO → Authorize McCainFoods.
 
 **"Account does not have access to enterprise skills repo"**
-→ Contact your administrator to get access, then re-run with `--skills-only`.
+→ Contact your admin for access, then re-run with `--skills-only`.
 
 **"Databricks CLI install failed"**
 → Install manually: https://docs.databricks.com/dev-tools/cli/install.html then re-run.
 
 **uv or Node not found after prerequisites**
-→ Close your terminal, open a new one (PATH needs to reload), then re-run the enterprise installer.
+→ Close terminal, open a new one (PATH needs to reload), then re-run.
 
-**"Failed to clone enterprise kit"** (curl/irm mode only)
-→ Run prerequisites first to ensure git is installed, then re-run.
-→ Check your internet connection and that github.com is reachable.
+**"Failed to clone enterprise kit"** (curl/irm mode)
+→ Check internet and that github.com is reachable. Ensure git is installed (run prerequisites).
 
-**Enterprise install on Windows fails at irm | iex**
-→ Use env vars to pass flags: `$env:DEVKIT_SKILLS_ONLY="true"` before `irm ... | iex`.
-→ Flags like `-SkillsOnly` only work when running from a local file (Option B).
+**Enterprise install on Windows fails at `irm | iex`**
+→ Use env vars for flags: `$env:DEVKIT_SKILLS_ONLY="true"` before `irm ... | iex`.
+→ Or use Option B (local clone) and run `.\enterprise_install.ps1 -SkillsOnly` directly.
+
+**Atlassian browser doesn't open**
+→ OAuth token is already cached from a previous run. Press Enter to continue — it will work on first Claude Code use.
