@@ -2,7 +2,7 @@
 # Enterprise AI Dev Kit — Installer (Windows)
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex
+#   irm https://raw.githubusercontent.com/McCainFoods/DAIA-ai-dev-kit/main/enterprise_install.ps1 | iex
 #   irm URL | iex  (then pass flags via env vars below)
 #
 # Environment overrides (set before running):
@@ -41,7 +41,7 @@ $EnterpriseSkillsRepoSubpath = "mccain-data-architecture-skills"
 $EnterpriseSkillsPath = ""
 
 # GitHub URL for this enterprise installer repo — used for self-clone/update.
-$EnterpriseKitRepo   = "https://github.com/mannarapu-ajay/custom-ai-dev-kit.git"
+$EnterpriseKitRepo   = "https://github.com/McCainFoods/DAIA-ai-dev-kit.git"
 $EnterpriseKitBranch = "main"
 
 # Databricks workspace catalog - add or remove entries as domains change.
@@ -133,7 +133,7 @@ while ($i -lt $args.Count) {
             Write-Host "$EnterpriseDisplay Enterprise AI Dev Kit Installer"
             Write-Host ""
             Write-Host "Usage (recommended -- no clone needed):"
-            Write-Host "  irm https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.ps1 | iex"
+            Write-Host "  irm https://raw.githubusercontent.com/McCainFoods/DAIA-ai-dev-kit/main/enterprise_install.ps1 | iex"
             Write-Host ""
             Write-Host "Usage (local clone):"
             Write-Host "  .\enterprise_install.ps1 [OPTIONS]"
@@ -983,8 +983,9 @@ Write-Step "Step 6 of 8 — Atlassian MCP"
 # -- Add Atlassian entry to .mcp.json -----------------------------------------
 $mcpJson = Get-Content $McpConfig -Raw | ConvertFrom-Json
 $atlassianEntry = [PSCustomObject]@{
-    command = "npx"
-    args    = @("mcp-remote", "https://mcp.atlassian.com/v1/mcp", "--transport", "http-first")
+    command       = "npx"
+    args          = @("mcp-remote", "https://mcp.atlassian.com/v1/mcp", "--transport", "http-first")
+    defer_loading = $true
 }
 if ($env:NODE_EXTRA_CA_CERTS) {
     $atlassianEntry | Add-Member -NotePropertyName 'env' -NotePropertyValue ([PSCustomObject]@{
@@ -1157,8 +1158,11 @@ if ($script:InstallSkills) {
         if (Test-Path $localPath) { $entSource = $localPath } else { Write-Warn "Local enterprise skills path not found: $localPath" }
     }
 
-    # Apply subfolder path if specified
+    # Apply subfolder path if specified.
+    # Save the repo root so we can copy CLAUDE.md from it after applying the subpath.
+    $entRepoRoot = ""
     if ($entSource -and $EnterpriseSkillsRepoSubpath) {
+        $entRepoRoot = $entSource
         $entSource = Join-Path $entSource $EnterpriseSkillsRepoSubpath
         if (-not (Test-Path $entSource)) {
             Write-Warn "Subfolder not found in repo: $EnterpriseSkillsRepoSubpath"
@@ -1167,14 +1171,28 @@ if ($script:InstallSkills) {
     }
 
     if ($entSource -and (Test-Path $entSource)) {
+        # Skills land under .claude/skills/<subpath>/<skill> to preserve the namespace.
+        $entSkillsDest = $skillsDest
+        if ($EnterpriseSkillsRepoSubpath) {
+            $entSkillsDest = Join-Path $skillsDest $EnterpriseSkillsRepoSubpath
+            New-Item -ItemType Directory -Path $entSkillsDest -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+
         Get-ChildItem -Path $entSource -Directory | Where-Object { $_.Name -ne "TEMPLATE" } | ForEach-Object {
             if (Test-Path (Join-Path $_.FullName "SKILL.md")) {
-                Copy-Item -Path $_.FullName -Destination (Join-Path $skillsDest $_.Name) -Recurse -Force
-                Add-Content -Path $_manifestPath -Value "$skillsDest|$($_.Name)" -Encoding UTF8
+                Copy-Item -Path $_.FullName -Destination (Join-Path $entSkillsDest $_.Name) -Recurse -Force
+                Add-Content -Path $_manifestPath -Value "$entSkillsDest|$($_.Name)" -Encoding UTF8
                 $entCount++
             }
         }
-        Write-Ok "Enterprise skills  ($entCount installed)  ->  $skillsDest"
+
+        # Copy CLAUDE.md from the repo root (same level as the subpath folder) to .claude/skills/CLAUDE.md
+        if ($entRepoRoot -and (Test-Path (Join-Path $entRepoRoot "CLAUDE.md"))) {
+            Copy-Item -Path (Join-Path $entRepoRoot "CLAUDE.md") -Destination (Join-Path $skillsDest "CLAUDE.md") -Force
+            Write-Ok "Enterprise CLAUDE.md  ->  $(Join-Path $skillsDest 'CLAUDE.md')"
+        }
+
+        Write-Ok "Enterprise skills  ($entCount installed)  ->  $entSkillsDest"
     } else {
         Write-Warn "No enterprise skills source found — skipping"
     }

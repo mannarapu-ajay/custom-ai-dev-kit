@@ -7,7 +7,7 @@
 # compute configuration, and enterprise skills pulled from a private repo.
 #
 # Usage:
-#   bash <(curl -sL https://raw.githubusercontent.com/mannarapu-ajay/custom-ai-dev-kit/main/enterprise_install.sh)
+#   bash <(curl -sL https://raw.githubusercontent.com/McCainFoods/DAIA-ai-dev-kit/main/enterprise_install.sh)
 #   bash <(curl -sL URL) --profile NAME    # skip profile prompt
 #   bash <(curl -sL URL) --force           # force reinstall
 #   bash <(curl -sL URL) --skills-only     # update skills only
@@ -48,7 +48,7 @@ ENTERPRISE_SKILLS_REPO_SUBPATH="mccain-data-architecture-skills"
 ENTERPRISE_SKILLS_PATH=""
 
 # GitHub URL for this enterprise installer repo — used for self-clone/update.
-ENTERPRISE_KIT_REPO="https://github.com/mannarapu-ajay/custom-ai-dev-kit.git"
+ENTERPRISE_KIT_REPO="https://github.com/McCainFoods/DAIA-ai-dev-kit.git"
 ENTERPRISE_KIT_BRANCH="main"
 
 # Databricks workspace catalog — add or remove entries as domains change.
@@ -870,7 +870,8 @@ data = json.loads(path.read_text())
 ca = '${NODE_EXTRA_CA_CERTS:-}'
 atlassian_entry = {
     'command': 'npx',
-    'args':    ['mcp-remote', 'https://mcp.atlassian.com/v1/mcp', '--transport', 'http-first']
+    'args':    ['mcp-remote', 'https://mcp.atlassian.com/v1/mcp', '--transport', 'http-first'],
+    'defer_loading': True
 }
 if ca: atlassian_entry['env'] = {'NODE_EXTRA_CA_CERTS': ca}
 data['mcpServers']['atlassian'] = atlassian_entry
@@ -1033,23 +1034,40 @@ if [ "$INSTALL_SKILLS" = true ]; then
         fi
     fi
 
-    # Apply subfolder path if specified (git mode only)
+    # Apply subfolder path if specified (git mode only).
+    # Save the repo root so we can copy CLAUDE.md from it after applying the subpath.
+    ENT_REPO_ROOT=""
     if [ -n "$ENT_SOURCE" ] && [ -n "$ENTERPRISE_SKILLS_REPO_SUBPATH" ]; then
+        ENT_REPO_ROOT="$ENT_SOURCE"
         ENT_SOURCE="$ENT_SOURCE/$ENTERPRISE_SKILLS_REPO_SUBPATH"
         [ -d "$ENT_SOURCE" ] || { warn "Subfolder not found in repo: $ENTERPRISE_SKILLS_REPO_SUBPATH"; ENT_SOURCE=""; }
     fi
 
     if [ -n "$ENT_SOURCE" ] && [ -d "$ENT_SOURCE" ]; then
+        # Skills land under .claude/skills/<subpath>/<skill> to preserve the namespace.
+        ENT_SKILLS_DEST="$SKILLS_DEST"
+        if [ -n "$ENTERPRISE_SKILLS_REPO_SUBPATH" ]; then
+            ENT_SKILLS_DEST="$SKILLS_DEST/$ENTERPRISE_SKILLS_REPO_SUBPATH"
+            mkdir -p "$ENT_SKILLS_DEST"
+        fi
+
         for skill_dir in "$ENT_SOURCE"/*/; do
             name=$(basename "$skill_dir")
             [ "$name" = "TEMPLATE" ] && continue
             # Only copy directories that contain a SKILL.md
             [ -f "$skill_dir/SKILL.md" ] || continue
-            cp -r "$skill_dir" "$SKILLS_DEST/$name"
-            echo "$SKILLS_DEST|$name" >> "$_adk/.installed-skills"
+            cp -r "$skill_dir" "$ENT_SKILLS_DEST/$name"
+            echo "$ENT_SKILLS_DEST|$name" >> "$_adk/.installed-skills"
             ENT_COUNT=$((ENT_COUNT + 1))
         done
-        ok "Enterprise skills  ($ENT_COUNT installed)  ->  $SKILLS_DEST"
+
+        # Copy CLAUDE.md from the repo root (same level as the subpath folder) to .claude/skills/CLAUDE.md
+        if [ -n "$ENT_REPO_ROOT" ] && [ -f "$ENT_REPO_ROOT/CLAUDE.md" ]; then
+            cp "$ENT_REPO_ROOT/CLAUDE.md" "$SKILLS_DEST/CLAUDE.md"
+            ok "Enterprise CLAUDE.md  ->  $SKILLS_DEST/CLAUDE.md"
+        fi
+
+        ok "Enterprise skills  ($ENT_COUNT installed)  ->  $ENT_SKILLS_DEST"
     else
         warn "No enterprise skills source found — skipping"
     fi
